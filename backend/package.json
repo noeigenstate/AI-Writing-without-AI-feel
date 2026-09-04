@@ -13,6 +13,7 @@
     "test:rewrite": "tsx src/scripts/test-rewrite.ts",
     "test:protect": "tsx src/scripts/test-protect.ts",
     "test:article": "tsx src/scripts/test-article.ts",
+    "test:novel": "tsx src/scripts/test-novel.ts",
     "test:research": "tsx src/scripts/test-research.ts",
     "test:research-security": "tsx src/scripts/test-research-security.ts",
     "test:licensed-media": "tsx src/scripts/test-licensed-media.ts",

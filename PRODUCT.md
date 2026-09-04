@@ -8,23 +8,23 @@ web
 
 ## Users
 
-Primary users are Chinese-speaking writers, editors, and independent content creators working on Word drafts or source-backed articles. They use the product at a desktop workstation to turn rough or AI-flavored material into publishable writing, with English available as a secondary interface language.
+Primary users are Chinese-speaking writers, fiction authors, editors, and independent content creators working on Word drafts, story ideas, or source-backed articles. They use the product at a desktop workstation to turn rough material into editable, publishable writing, with English available as a secondary interface language.
 
 ## Product Purpose
 
-AI写作 is a writing workbench for rewriting Word documents, generating articles from a title or domain, reviewing source material, editing sentence by sentence, and exporting finished work. Success means the user can move from draft or idea to credible, natural-sounding, editable copy without stitching together several tools.
+AI写作 is a writing workbench for rewriting Word documents, drafting fiction from a story brief, generating articles from a title or domain, editing sentence by sentence, and exporting finished work. Success means the user can move from draft, premise, or article idea to natural-sounding, editable copy without stitching together several tools.
 
 ## Positioning
 
-The product combines two workflows in one persistent workspace: humanizing existing documents and generating articles grounded in live research. Its distinguishing mechanism is that source collection, citation-aware generation, close editing, scoring, and Word or WeChat-ready output remain connected rather than becoming disconnected chat responses.
+The product combines three independent workflows in one persistent workspace: humanizing existing documents, drafting fiction from a controlled narrative brief, and generating articles grounded in live research. Its distinguishing mechanism is that generation, close editing, scoring, and Word or WeChat-ready output remain connected rather than becoming disconnected chat responses; research and citations remain exclusive to factual articles.
 
 ## Operating Context
 
-The current application is a local-first React/Vite web app commonly launched on Windows. Users upload `.docx` or `.txt` samples, choose a writing scene and target length, wait through visible generation progress, inspect references, refine individual sentences, and export Word or WeChat-formatted HTML. Article generation can search public web articles, comments, papers, and news sources.
+The current application is a local-first React/Vite web app commonly launched on Windows. Users can upload `.docx` or `.txt` samples, configure an article or fiction draft, wait through visible generation progress, refine individual sentences, and export Word or WeChat-formatted HTML. Article generation can search public web articles, comments, papers, and news sources; fiction generation deliberately does not.
 
 ## Capabilities and Constraints
 
-- Preserve both Rewrite Word and Generate Article modes, their independent in-progress state, bilingual UI, source preview, editing, scoring, and export behavior.
+- Preserve Rewrite Word, Generate Article, and Write Novel modes, their independent in-progress state, bilingual UI, editing, scoring, and export behavior. Source preview and citations apply only to Generate Article.
 - The interface must remain usable during 30–90 second model operations and when individual research providers fail.
 - The frontend stack is React 18, TypeScript, Zustand, and Vite with no component-library dependency.
 - The application must remain responsive and must not rely on remote decorative assets to render its core interface.

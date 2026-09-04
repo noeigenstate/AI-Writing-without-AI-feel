@@ -4,7 +4,7 @@
 
 **Turn AI-shaped drafts into writing that reads like a person wrote it.**
 
-Open-source AI writing workbench for **Word rewriting**, **human-likeness scoring**, **source-backed article generation**, and **WeChat Official Account formatting**. It works in English and Chinese.
+Open-source AI writing workbench for **Word rewriting**, **fiction writing**, **human-likeness scoring**, **source-backed article generation**, and **WeChat Official Account formatting**. It works in English and Chinese.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-22a06b.svg)](LICENSE)
 ![Node](https://img.shields.io/badge/Node-%E2%89%A520.9-339933?logo=node.js&logoColor=white)
@@ -24,7 +24,7 @@ Open-source AI writing workbench for **Word rewriting**, **human-likeness scorin
 | <img src="assets/screenshots/01-rewrite.png" alt="Rewrite Word workflow in the editorial proof-desk interface" /> | <img src="assets/screenshots/02-generate.png" alt="Source-backed article generation workflow" /> | <img src="assets/screenshots/03-gzh.png" alt="WeChat-formatted article preview with a restored source image and attribution" /> |
 
 <div align="center">
-  <sub>An editorial proof desk for Word rewriting, source-backed article generation, and self-contained WeChat-ready layouts.</sub>
+  <sub>An editorial proof desk for Word rewriting, fiction drafting, source-backed article generation, and self-contained WeChat-ready layouts.</sub>
 </div>
 
 ## What It Does
@@ -33,7 +33,8 @@ Open-source AI writing workbench for **Word rewriting**, **human-likeness scorin
 - **Score how human the text feels** with a local 0-100 human-likeness score.
 - **Click any sentence** to get alternatives or edit it by hand.
 - **Learn your style** from uploaded `.docx` or `.txt` samples.
-- **Show progress while the model works** for article writing, whole-document rewriting, title options, and topic generation.
+- **Show progress while the model works** for fiction and article writing, whole-document rewriting, title options, and topic generation.
+- **Write fiction from a story brief**: optionally provide a title, then choose genre, viewpoint, tone, and length. The result opens in the same sentence-level editor and exports to Word.
 - **Generate an article from a title or domain** with default searches across relevant web articles, public comments, arXiv papers, and RSS news, using attributed paraphrases or short excerpts.
 - **Carry verified source media through the full workflow**: the backend downloads and validates attributed web images or GIFs, then reuses the same bytes in the editor, Word, and WeChat export.
 - **Auto-format generated articles for the WeChat Official Account editor**: pick a visual theme in the article editor, click Auto-format, then copy the result straight into 公众号 with one click.
@@ -171,6 +172,8 @@ The system uses only relevant, attributable network images or GIFs whose origina
 
 Length tiers use explicit body-only ranges: Chinese short 450–650 characters, medium 1,000–1,300, and long 3,000–3,800; English short 350–500 words, medium 850–1,100, and long 2,200–2,800. If the first draft misses its band, the backend runs up to two corrective passes. A generation request succeeds only when the final body is inside its selected range; a persistent miss returns a retryable error instead of an off-target article. The final count and target range travel with successful responses and update live while editing. Titles, references, inline citation markers, figure captions, and tables do not count toward the body target.
 
+Fiction generation uses those same validated length bands, but it does not invoke web research or add citations. Short and medium produce compact fiction forms; the long tier produces an opening chapter with a complete scene arc and forward pressure. The generation prompt preserves the chosen viewpoint and tone, and later sentence polishing receives a fiction-specific continuity guard so it does not invent new plot events.
+
 ## WeChat Formatting (公众号排版)
 
 After generating an article, the editor shows a formatting bar: pick a theme from the dropdown, click **Auto-format**, and the article is converted into HTML that survives pasting into the WeChat Official Account editor — inline styles only, every text node wrapped in `<span leaf="">`, no `<div>`/`class`/`id`, full-width punctuation in prose.
@@ -198,6 +201,7 @@ LLM_REASONING_EFFORT=off
 cd backend
 npm run build
 npm run test:article
+npm run test:novel
 npm run test:research
 npm run test:research-security
 npm run test:licensed-media
@@ -212,6 +216,7 @@ npm run build
 npm run test:progress
 npm run test:gzh-security
 npm run test:api-network
+npm run test:novel-ui
 ```
 
 ## Project Map
@@ -219,12 +224,12 @@ npm run test:api-network
 ```text
 backend/
   src/routes/      API endpoints
-  src/services/    rewrite, article, docx, score, research, gzh formatting
+  src/services/    rewrite, article, novel, docx, score, research, gzh formatting
   src/prompts/     model prompts
   assets/gzh/      WeChat theme component libraries (from gzh-design-skill)
 
 frontend/
-  src/components/  upload, generate, gzh, editor, common UI
+  src/components/  upload, article generation, novel generation, gzh, editor, common UI
   src/lib/         API client, store, i18n
   src/styles.css   editorial proof-desk theme and responsive layouts
 

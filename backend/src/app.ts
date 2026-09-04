@@ -5,6 +5,7 @@ import healthRoutes from "./routes/health.routes.js";
 import scoreRoutes from "./routes/score.routes.js";
 import stylesRoutes from "./routes/styles.routes.js";
 import articleRoutes from "./routes/article.routes.js";
+import novelRoutes from "./routes/novel.routes.js";
 import rewriteRoutes from "./routes/rewrite.routes.js";
 import gzhRoutes from "./routes/gzh.routes.js";
 import { config } from "./core/config.js";
@@ -46,6 +47,7 @@ export function createApp(options: AppOptions = {}): Express {
   app.use(scoreRoutes);
   app.use(stylesRoutes);
   app.use(articleRoutes);
+  app.use(novelRoutes);
   app.use(rewriteRoutes);
   app.use(gzhRoutes);
   app.use(apiErrorHandler);

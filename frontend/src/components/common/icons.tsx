@@ -27,6 +27,14 @@ export function WordIcon({ className = "" }: IconProps) {
   );
 }
 
+export function BookIcon({ className = "" }: IconProps) {
+  return (
+    <svg className={`icon-img ${className}`.trim()} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M3.5 4.5c3.4 0 6 .8 8.5 2.6v12.4c-2.5-1.8-5.1-2.6-8.5-2.6zM20.5 4.5c-3.4 0-6 .8-8.5 2.6v12.4c2.5-1.8 5.1-2.6 8.5-2.6z" />
+    </svg>
+  );
+}
+
 export function SamplesIcon({ className = "" }: IconProps) {
   return (
     <svg className={`icon-img ${className}`.trim()} viewBox="0 0 24 24" aria-hidden="true" focusable="false">

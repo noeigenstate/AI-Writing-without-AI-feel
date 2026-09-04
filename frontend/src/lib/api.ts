@@ -97,6 +97,25 @@ export interface ResearchBundleDTO {
 
 export type TargetLength = "short" | "medium" | "long";
 export type ArticleLengthUnit = "characters" | "words";
+export type NovelGenre =
+  | "literary"
+  | "romance"
+  | "suspense"
+  | "science-fiction"
+  | "fantasy"
+  | "historical"
+  | "realism";
+export type NovelViewpoint = "first-person" | "third-limited" | "omniscient";
+export type NovelTone = "restrained" | "warm" | "dark" | "humorous" | "tense";
+
+export interface NovelGenerationInput {
+  title: string;
+  premise: string;
+  genre: NovelGenre;
+  viewpoint: NovelViewpoint;
+  tone: NovelTone;
+  targetLength: TargetLength;
+}
 
 export interface ArticleLengthDTO {
   tier: TargetLength;
@@ -229,6 +248,17 @@ export async function generateArticleFromTitle(
     body: JSON.stringify({ title, styleId, sceneId, targetLength, lang }),
   }, lang);
   if (!res.ok) throw await apiError(res, "Failed to generate article from title");
+  return res.json() as Promise<GeneratedArticleResponseDTO>;
+}
+
+/** Generate an editable fiction draft without invoking the research pipeline. */
+export async function generateNovel(input: NovelGenerationInput, lang: Lang = "en") {
+  const res = await apiFetch(`${BASE}/novel/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...input, lang }),
+  }, lang);
+  if (!res.ok) throw await apiError(res, "Failed to generate fiction");
   return res.json() as Promise<GeneratedArticleResponseDTO>;
 }
 
@@ -384,7 +414,12 @@ export async function formatGzhArticle(markdown: string, themeId: string, author
 }
 
 /** Export the edited document to docx and trigger a browser download. */
-export async function exportDoc(docId: string, texts: Record<number, string>, lang: Lang = "en") {
+export async function exportDoc(
+  docId: string,
+  texts: Record<number, string>,
+  lang: Lang = "en",
+  filename = "rewritten.docx"
+) {
   const res = await apiFetch(`${BASE}/export`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -395,7 +430,7 @@ export async function exportDoc(docId: string, texts: Record<number, string>, la
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "rewritten.docx";
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
 }

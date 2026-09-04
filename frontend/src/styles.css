@@ -1101,6 +1101,7 @@ button.link:hover {
 
 .styleselect,
 .text-input,
+.novel-premise-input,
 .edit-area textarea {
   width: 100%;
   border: 1px solid var(--line-strong);
@@ -1132,6 +1133,7 @@ button.link:hover {
 }
 
 .text-input::placeholder,
+.novel-premise-input::placeholder,
 .edit-area textarea::placeholder {
   color: var(--muted);
   opacity: 1;
@@ -1139,12 +1141,87 @@ button.link:hover {
 
 .styleselect:focus,
 .text-input:focus,
+.novel-premise-input:focus,
 .edit-area textarea:focus {
   border-color: var(--cyan-dark);
 }
 
 .pick-desc {
   margin: 9px 0 0;
+}
+
+.novel-field {
+  margin-top: 22px;
+}
+
+.novel-field label,
+.novel-options label,
+.novel-length > span {
+  display: block;
+  color: var(--ink-strong);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.novel-field .text-input {
+  margin-top: 7px;
+}
+
+.novel-premise-input {
+  min-height: 240px;
+  margin-top: 7px;
+  padding: 14px;
+  font: inherit;
+  line-height: 1.7;
+  resize: vertical;
+}
+
+.novel-field-meta {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.novel-field-meta span:first-child {
+  max-width: 54ch;
+}
+
+.novel-field-meta span:last-child {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.novel-options {
+  display: grid;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.novel-options label:not(:first-child) {
+  margin-top: 4px;
+}
+
+.novel-length {
+  margin-top: 18px;
+}
+
+.novel-length .segment {
+  margin-top: 8px;
+}
+
+.novel-length .segment button {
+  line-height: 1.35;
+}
+
+.novel-submit {
+  width: 100%;
+  min-height: 52px;
+  margin-top: 20px;
 }
 
 .row-end {
@@ -2267,6 +2344,16 @@ footer.hint {
     padding: 22px 18px;
   }
 
+  .novel-premise-input {
+    min-height: 190px;
+  }
+
+  .novel-field-meta {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 4px;
+  }
+
   .generator-results {
     margin-top: 20px;
   }
@@ -2440,5 +2527,18 @@ footer.hint {
 
   .gzh-preview {
     height: 470px;
+  }
+}
+
+@media (max-width: 460px) {
+  .side-nav .side-item {
+    gap: 5px;
+    padding-right: 6px;
+    padding-left: 6px;
+    font-size: 12.5px;
+  }
+
+  .side-nav .side-icon {
+    display: none;
   }
 }

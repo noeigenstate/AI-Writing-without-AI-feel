@@ -22,6 +22,7 @@ try {
   const { PROGRESS_PLANS, getProgressLogEntries, getProgressSnapshot } = await import(pathToFileURL(outfile));
 
   assert.ok(PROGRESS_PLANS.articleTopics, "topic/title planning has progress");
+  assert.ok(PROGRESS_PLANS.novel, "fiction generation has progress");
   assert.ok(PROGRESS_PLANS.titleCandidates, "title candidate generation has progress");
 
   for (const [task, plan] of Object.entries(PROGRESS_PLANS)) {

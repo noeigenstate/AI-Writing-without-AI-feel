@@ -4,7 +4,7 @@
 
 **把 AI 味很重的初稿，改成更像真人写的文字。**
 
-一个开源 AI 写作工作台：支持 **Word 改写**、**人类感评分**、**带资料来源的文章生成**、**公众号一键排版**。界面支持中文和英文。
+一个开源 AI 写作工作台：支持 **Word 改写**、**小说创作**、**人类感评分**、**带资料来源的文章生成**、**公众号一键排版**。界面支持中文和英文。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-22a06b.svg)](LICENSE)
 ![Node](https://img.shields.io/badge/Node-%E2%89%A520.9-339933?logo=node.js&logoColor=white)
@@ -24,7 +24,7 @@
 | <img src="assets/screenshots/01-rewrite.png" alt="编辑部校样台风格的 Word 改写流程" /> | <img src="assets/screenshots/02-generate.png" alt="带资料来源的文章生成流程" /> | <img src="assets/screenshots/03-gzh.png" alt="已恢复真实来源图片和署名的公众号排版预览" /> |
 
 <div align="center">
-  <sub>编辑部校样台：Word 改写、带来源文章生成，以及包含真实来源图片的自包含公众号排版。</sub>
+  <sub>编辑部校样台：Word 改写、小说创作、带来源文章生成，以及包含真实来源图片的自包含公众号排版。</sub>
 </div>
 
 ## 它能做什么
@@ -33,7 +33,8 @@
 - **给文字打“人类感评分”**，0-100 分，越高越像真人文章。
 - **逐句修改**：点任意句子，选择替代表达，或者手动改。
 - **学习你的口吻**：上传 `.docx` 或 `.txt` 范文，让输出更像你的风格。
-- **显示模型工作进度**：生成文章、整篇润色、标题候选、选题生成都会显示百分比、当前阶段和日志。
+- **显示模型工作进度**：创作小说、生成文章、整篇润色、标题候选、选题生成都会显示百分比、当前阶段和日志。
+- **根据故事设定写小说**：标题可以留空，再选择题材、叙事视角、故事基调和篇幅；生成后进入同一个逐句编辑器，并可导出 Word。
 - **按标题或领域生成文章**：默认搜索相关网页文章、公开评论、arXiv 论文和新闻 RSS，合理转述或短摘录，并带来源、图表和引用。
 - **让真实来源素材贯穿完整流程**：后端下载并校验带署名的网络图片或 GIF，同一份安全字节会用于编辑器预览、Word 和公众号导出。
 - **生成文章后一键排版公众号**：在文章编辑器里选主题、点「自动排版」，排版结果一键复制、直接粘贴进微信公众号编辑器，样式不丢。
@@ -171,6 +172,8 @@ Google News 和 Hacker News 检索不需要密钥。在 `backend/.env` 中配置
 
 字数档位使用明确范围，并只计算正文：中文短篇 450–650 字、中篇 1000–1300 字、长篇 3000–3800 字；英文短篇 350–500 词、中篇 850–1100 词、长篇 2200–2800 词。模型首次生成偏离范围时，后端最多自动校准两轮；只有最终正文落在所选范围内，生成请求才会成功，持续偏离会返回可重试错误而不是展示一篇不达标的成品。成功结果会返回实际字数和目标范围，并在编辑器中随修改实时更新。标题、参考资料、行内引用编号、图注和表格不计入正文目标。
 
+小说创作沿用同一套经过校验的篇幅范围，但不会启动网页检索，也不会添加引用。微短篇和短篇会形成紧凑的完整叙事，长档则生成具有完整场景弧和后续张力的长篇开篇。后续逐句润色会带上小说连续性约束，避免擅自增加关键情节。
+
 ## 公众号排版
 
 生成文章后，编辑器顶部会出现排版工具条：下拉选一套主题、点「**自动排版**」，文章就被转成能安全粘贴进微信公众号编辑器的 HTML——全部内联样式、文字节点 `<span leaf="">` 包裹、不用 `<div>`/`class`/`id`、正文全角标点。
@@ -198,6 +201,7 @@ LLM_REASONING_EFFORT=off
 cd backend
 npm run build
 npm run test:article
+npm run test:novel
 npm run test:research
 npm run test:research-security
 npm run test:licensed-media
@@ -212,6 +216,7 @@ npm run build
 npm run test:progress
 npm run test:gzh-security
 npm run test:api-network
+npm run test:novel-ui
 ```
 
 ## 项目结构
@@ -219,12 +224,12 @@ npm run test:api-network
 ```text
 backend/
   src/routes/      API 路由
-  src/services/    改写、文章、Word、评分、资料检索、公众号排版
+  src/services/    改写、文章、小说、Word、评分、资料检索、公众号排版
   src/prompts/     模型提示词
   assets/gzh/      公众号主题组件库（来自 gzh-design-skill）
 
 frontend/
-  src/components/  上传、生成、公众号排版、编辑器、通用组件
+  src/components/  上传、文章生成、小说生成、公众号排版、编辑器、通用组件
   src/lib/         API、状态、国际化文案
   src/styles.css   编辑部校样台主题与响应式布局
 

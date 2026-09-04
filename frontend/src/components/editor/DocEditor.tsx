@@ -59,7 +59,7 @@ export default function DocEditor() {
     [storedRenderBlocks, paragraphs]
   );
   const compare = Boolean(aiScore);
-  const bodyLength = length && mode === "generate"
+  const bodyLength = length && (mode === "generate" || mode === "novel")
     ? measureArticleBody(paragraphs, blocks, titleIndex, length.unit)
     : null;
   const lengthState = bodyLength === null || !length

@@ -7,6 +7,7 @@ import {
   fetchArticleDomains,
   generateArticle,
   generateArticleFromTitle,
+  generateNovel,
   diagnoseText,
   scoreText,
   type ArticleRenderBlockDTO,
@@ -14,6 +15,7 @@ import {
   type ArticleDomainDTO,
   type AiScoreDTO,
   type DiagnosticReportDTO,
+  type NovelGenerationInput,
   type ParagraphDTO,
   type ResearchBundleDTO,
   type StyleDTO,
@@ -24,7 +26,7 @@ import {
 import { getStoredLang, storeLang, messages, type Lang } from "./i18n.js";
 import type { ProgressTask } from "./progress.js";
 
-type Mode = "rewrite" | "generate";
+type Mode = "rewrite" | "generate" | "novel";
 type Step = "upload" | "ready";
 
 interface WorkspaceState {
@@ -83,6 +85,7 @@ interface State {
     targetLength: TargetLength
   ) => Promise<void>;
   doGenerateArticleFromTitle: (title: string, styleId: string, sceneId: WritingSceneId, targetLength: TargetLength) => Promise<void>;
+  doGenerateNovel: (input: NovelGenerationInput) => Promise<void>;
   doRewrite: () => Promise<void>;
   setSentence: (paraIndex: number, sentenceIdx: number, text: string) => void;
   setParagraph: (paraIndex: number, text: string) => void;
@@ -141,6 +144,7 @@ function workspacePatch(s: State, mode: Mode, patch: Partial<WorkspaceState>) {
  */
 const rewriteWorkspace = emptyWorkspace();
 const generateWorkspace = emptyWorkspace();
+const novelWorkspace = emptyWorkspace();
 
 export const useStore = create<State>((set, get) => ({
   lang: getStoredLang(),
@@ -151,6 +155,7 @@ export const useStore = create<State>((set, get) => ({
   workspaces: {
     rewrite: rewriteWorkspace,
     generate: generateWorkspace,
+    novel: novelWorkspace,
   },
 
   async recomputeScore(mode = get().mode) {
@@ -296,6 +301,40 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
+  async doGenerateNovel(input) {
+    const mode: Mode = "novel";
+    set((s) => workspacePatch(s, mode, {
+      busy: messages[get().lang].busyNovel,
+      progress: startProgress("novel"),
+      error: null,
+    }));
+    try {
+      const r = await generateNovel(input, get().lang);
+      set((s) => workspacePatch(s, mode, {
+        docId: r.docId,
+        styleSummary: r.styleSummary,
+        paragraphs: r.paragraphs,
+        renderBlocks: r.renderBlocks ?? null,
+        length: r.length ?? null,
+        titleIndex: r.titleIndex,
+        research: null,
+        aiScore: null,
+        currentScore: null,
+        diagnosis: null,
+        step: "ready",
+        busy: null,
+        progress: null,
+      }));
+      void get().recomputeScore(mode);
+    } catch (e) {
+      set((s) => workspacePatch(s, mode, {
+        error: (e as Error).message,
+        busy: null,
+        progress: null,
+      }));
+    }
+  },
+
   async doRewrite() {
     const mode = get().mode;
     const { docId } = get();
@@ -351,7 +390,7 @@ export const useStore = create<State>((set, get) => ({
         const current = p.sentences.join("");
         if (current !== p.original) texts[p.index] = current;
       }
-      await exportDoc(docId, texts, lang);
+      await exportDoc(docId, texts, lang, mode === "novel" ? "novel.docx" : "rewritten.docx");
       set((s) => workspacePatch(s, mode, { busy: null }));
     } catch (e) {
       set((s) => workspacePatch(s, mode, { error: (e as Error).message, busy: null }));

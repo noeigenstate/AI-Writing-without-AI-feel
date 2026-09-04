@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { useStore } from "./lib/store.js";
 import UploadPanel from "./components/upload/UploadPanel.js";
 import ArticleGenerator from "./components/generate/ArticleGenerator.js";
+import NovelGenerator from "./components/novel/NovelGenerator.js";
 import DocEditor from "./components/editor/DocEditor.js";
 import ScoreBar from "./components/editor/ScoreBar.js";
-import { Sparkle, WordIcon } from "./components/common/icons.js";
+import { BookIcon, Sparkle, WordIcon } from "./components/common/icons.js";
 import ProgressBanner from "./components/common/ProgressBanner.js";
 import { messages } from "./lib/i18n.js";
 
@@ -15,7 +16,8 @@ export default function App() {
   const t = messages[lang];
   const rewriteStep = mode === "rewrite" ? step : workspaces.rewrite.step;
   const generateStep = mode === "generate" ? step : workspaces.generate.step;
-  const showUploadHero = step === "upload" && (mode === "rewrite" || generatorView === "setup");
+  const novelStep = mode === "novel" ? step : workspaces.novel.step;
+  const showUploadHero = step === "upload" && (mode !== "generate" || generatorView === "setup");
 
   useEffect(() => {
     document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
@@ -25,7 +27,7 @@ export default function App() {
     if (generateStep !== "upload") setGeneratorView("setup");
   }, [generateStep]);
 
-  function selectMode(next: "rewrite" | "generate") {
+  function selectMode(next: "rewrite" | "generate" | "novel") {
     setMode(next);
   }
 
@@ -60,6 +62,17 @@ export default function App() {
             </span>
             {t.modeGenerate}
           </button>
+          <button
+            className={`side-item${mode === "novel" ? " active" : ""}`}
+            onClick={() => selectMode("novel")}
+            aria-current={mode === "novel" ? "page" : undefined}
+          >
+            <span className="side-index" aria-hidden="true">03</span>
+            <span className="side-icon">
+              <BookIcon />
+            </span>
+            {t.modeNovel}
+          </button>
         </nav>
 
         <div className="side-foot">
@@ -78,16 +91,26 @@ export default function App() {
           <span>
             {mode === "rewrite"
               ? (lang === "zh" ? "改写工作台" : "REWRITE DESK")
-              : generatorView === "results"
-                ? (lang === "zh" ? "标题提案台" : "TITLE DESK")
-                : (lang === "zh" ? "写作工作台" : "WRITING DESK")}
+              : mode === "novel"
+                ? (lang === "zh" ? "小说工作台" : "FICTION DESK")
+                : generatorView === "results"
+                  ? (lang === "zh" ? "标题提案台" : "TITLE DESK")
+                  : (lang === "zh" ? "写作工作台" : "WRITING DESK")}
           </span>
-          <span>{lang === "zh" ? "字句清楚 · 依据可查" : "CLEAR COPY · VISIBLE SOURCES"}</span>
+          <span>
+            {mode === "novel"
+              ? (lang === "zh" ? "人物可信 · 情节连贯" : "CONSISTENT VOICE · COHERENT PLOT")
+              : (lang === "zh" ? "字句清楚 · 依据可查" : "CLEAR COPY · VISIBLE SOURCES")}
+          </span>
         </div>
         {showUploadHero ? (
           <header className="hero">
-            <h1 className="hero-title">{mode === "rewrite" ? t.heroRewriteTitle : t.heroGenerateTitle}</h1>
-            <p className="hero-sub">{mode === "rewrite" ? t.heroRewriteSub : t.heroGenerateSub}</p>
+            <h1 className="hero-title">
+              {mode === "rewrite" ? t.heroRewriteTitle : mode === "generate" ? t.heroGenerateTitle : t.heroNovelTitle}
+            </h1>
+            <p className="hero-sub">
+              {mode === "rewrite" ? t.heroRewriteSub : mode === "generate" ? t.heroGenerateSub : t.heroNovelSub}
+            </p>
             {mode === "generate" && <p className="hero-proxy-hint">{t.researchProxyHint}</p>}
           </header>
         ) : step !== "upload" ? (
@@ -110,19 +133,22 @@ export default function App() {
 
         {step === "ready" && styleSummary && (
           <details className="style-box">
-            <summary>{t.styleProfile}</summary>
+            <summary>{mode === "novel" ? t.novelSettingsSummary : t.styleProfile}</summary>
             <pre>{styleSummary}</pre>
           </details>
         )}
 
         <main>
-          {/* 两个工作区的编辑器都保持挂载、只用 hidden 切换显隐：卸载会丢掉
+          {/* 三个工作区的编辑器都保持挂载、只用 hidden 切换显隐：卸载会丢掉
               公众号排版等组件本地状态，切回来时进行中的排版就被打断了 */}
           <section hidden={mode !== "rewrite"}>
             {rewriteStep === "upload" ? <UploadPanel /> : <DocEditor />}
           </section>
           <section hidden={mode !== "generate"}>
             {generateStep === "upload" ? <ArticleGenerator onViewChange={setGeneratorView} /> : <DocEditor />}
+          </section>
+          <section hidden={mode !== "novel"}>
+            {novelStep === "upload" ? <NovelGenerator /> : <DocEditor />}
           </section>
         </main>
 

@@ -10,6 +10,7 @@
     "test:progress": "node test/progress.test.mjs",
     "test:gzh-security": "node test/gzh-export.test.mjs",
     "test:api-network": "node test/api-network-error.test.mjs",
+    "test:novel-ui": "node test/novel-ui.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
