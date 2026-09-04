@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "generatedAt": "2026-08-12T05:44:22.8112629-04:00",
-  "title": "Design System: Speak Plainly",
+  "title": "Design System: AI-Writing-without-AI-feel",
   "extensions": {
     "colorMeta": {
       "canvas": {
@@ -175,7 +175,7 @@
   ],
   "narrative": {
     "northStar": "Editorial Proof Desk / 编辑部校样台",
-    "overview": "Speak Plainly feels like a magazine copy desk laid out for active work: a deep editorial rail frames cool paper, fluorescent proof marks identify decisive actions, and cyan metadata keeps evidence visible without competing with the draft. The interface is calm, literate, information-dense, and deliberately low-depth.\n\nAuthorship and evidence share one proof surface. Folio labels, hairline rules, crop marks, compressed headlines, ledger rows, and a white document galley make the application read as a working publication rather than a generic AI dashboard.",
+    "overview": "AI-Writing-without-AI-feel feels like a magazine copy desk laid out for active work: a deep editorial rail frames cool paper, fluorescent proof marks identify decisive actions, and cyan metadata keeps evidence visible without competing with the draft. The interface is calm, literate, information-dense, and deliberately low-depth.\n\nAuthorship and evidence share one proof surface. Folio labels, hairline rules, crop marks, compressed headlines, ledger rows, and a white document galley make the application read as a working publication rather than a generic AI dashboard.",
     "keyCharacteristics": [
       "Magazine flatplan structure with folio numbers, crop marks, and ruled sections.",
       "Deep ink-green fields, cool paper neutrals, fluorescent coral proofing, and cyan metadata.",

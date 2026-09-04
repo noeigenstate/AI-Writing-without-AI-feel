@@ -37,8 +37,7 @@ export default function App() {
             <ChatLogo />
           </span>
           <div className="brand-text">
-            <strong>Speak Plainly</strong>
-            {lang === "zh" && <span className="brand-zh">说人话</span>}
+            <strong>AI-Writing-without-AI-feel</strong>
           </div>
         </div>
 
@@ -80,7 +79,7 @@ export default function App() {
 
       <div className="main-pane">
         <div className="workspace-folio" aria-hidden="true">
-          <span>SP—001</span>
+          <span>AIW—001</span>
           <span>
             {mode === "rewrite"
               ? (lang === "zh" ? "改写工作台" : "REWRITE DESK")

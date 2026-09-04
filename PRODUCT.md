@@ -12,7 +12,7 @@ Primary users are Chinese-speaking writers, editors, and independent content cre
 
 ## Product Purpose
 
-Speak Plainly（说人话）is a writing workbench for rewriting Word documents, generating articles from a title or domain, reviewing source material, editing sentence by sentence, and exporting finished work. Success means the user can move from draft or idea to credible, natural-sounding, editable copy without stitching together several tools.
+AI-Writing-without-AI-feel is a writing workbench for rewriting Word documents, generating articles from a title or domain, reviewing source material, editing sentence by sentence, and exporting finished work. Success means the user can move from draft or idea to credible, natural-sounding, editable copy without stitching together several tools.
 
 ## Positioning
 
@@ -32,7 +32,7 @@ The current application is a local-first React/Vite web app commonly launched on
 
 ## Brand Commitments
 
-Retain the names “Speak Plainly” and “说人话”. The voice is direct, calm, literate, and credible rather than promotional. The previous gradient chat-bubble logo and pastel SaaS styling are not protected and should not be retained.
+Retain the name “AI-Writing-without-AI-feel”. The voice is direct, calm, literate, and credible rather than promotional. The previous gradient chat-bubble logo and pastel SaaS styling are not protected and should not be retained.
 
 ## Evidence on Hand
 

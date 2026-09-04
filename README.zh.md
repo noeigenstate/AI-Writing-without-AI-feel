@@ -1,6 +1,6 @@
 <div align="center">
 
-# Speak Plainly · 说人话
+# AI-Writing-without-AI-feel
 
 **把 AI 味很重的初稿，改成更像真人写的文字。**
 

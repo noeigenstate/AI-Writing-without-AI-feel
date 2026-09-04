@@ -1,6 +1,6 @@
 <div align="center">
 
-# Speak Plainly · 说人话
+# AI-Writing-without-AI-feel
 
 **Turn AI-shaped drafts into writing that reads like a person wrote it.**
 

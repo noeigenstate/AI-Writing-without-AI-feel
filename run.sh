@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# One-click launcher for Speak Plainly.
+# One-click launcher for AI-Writing-without-AI-feel.
 # Starts the backend and the frontend dev server together, installing
 # dependencies and creating backend/.env on first run.
 #
@@ -40,7 +40,7 @@ fi
 pids=()
 cleanup() {
   echo
-  echo "Stopping Speak Plainly..."
+  echo "Stopping AI-Writing-without-AI-feel..."
   for pid in "${pids[@]}"; do
     kill "$pid" 2>/dev/null || true
   done
@@ -71,7 +71,7 @@ echo "▶ Starting frontend (dev server URL is printed below)"
 pids+=("$!")
 
 echo
-echo "Speak Plainly is starting. Open the frontend URL shown above in your browser."
+echo "AI-Writing-without-AI-feel is starting. Open the frontend URL shown above in your browser."
 echo "Press Ctrl+C or run ./stop.sh from another shell to stop both servers."
 
 # Exit (and trigger cleanup) as soon as either server stops.

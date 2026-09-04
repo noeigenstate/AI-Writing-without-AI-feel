@@ -43,7 +43,7 @@ while (Date.now() < deadline) {
   if (frontendReady && backendReady) {
     console.log("");
     console.log("============================================");
-    console.log("Speak Plainly is ready.");
+    console.log("AI-Writing-without-AI-feel is ready.");
     console.log(`Open in your browser: ${frontendUrl}`);
     console.log("Backend API: http://127.0.0.1:8787");
     console.log("Press Ctrl+C once to stop both services.");

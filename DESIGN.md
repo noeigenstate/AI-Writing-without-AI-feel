@@ -1,5 +1,5 @@
 ---
-name: "Speak Plainly"
+name: "AI-Writing-without-AI-feel"
 description: "An editorial proof desk that keeps authorship, evidence, and revision on one calm working surface."
 colors:
   canvas: "#e8ebe5"
@@ -95,13 +95,13 @@ components:
     width: "930px"
 ---
 
-# Design System: Speak Plainly
+# Design System: AI-Writing-without-AI-feel
 
 ## Overview
 
 **Creative North Star: "Editorial Proof Desk / 编辑部校样台"**
 
-Speak Plainly feels like a magazine copy desk laid out for active work: a deep editorial rail frames cool paper, fluorescent proof marks identify decisive actions, and cyan metadata keeps evidence visible without competing with the draft. The interface is calm, literate, information-dense, and deliberately low-depth.
+AI-Writing-without-AI-feel feels like a magazine copy desk laid out for active work: a deep editorial rail frames cool paper, fluorescent proof marks identify decisive actions, and cyan metadata keeps evidence visible without competing with the draft. The interface is calm, literate, information-dense, and deliberately low-depth.
 
 Authorship and evidence share one proof surface. Folio labels, hairline rules, crop marks, compressed headlines, ledger rows, and a white document galley make the application read as a working publication rather than a generic AI dashboard.
 

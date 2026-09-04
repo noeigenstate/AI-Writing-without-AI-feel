@@ -36,7 +36,7 @@ try {
   await assert.rejects(
     () => previewResearch("ai-tech", "", "AI", "zh"),
     {
-      message: "无法连接本地后端。请重新运行 run.bat，等命令行显示“Speak Plainly is ready”后再试。",
+      message: "无法连接本地后端。请重新运行 run.bat，等命令行显示“AI-Writing-without-AI-feel is ready”后再试。",
     },
     "Chinese API calls should replace the browser's raw network error with a recovery step"
   );
@@ -44,7 +44,7 @@ try {
   await assert.rejects(
     () => fetchArticleTopics("ai-tech", "", 6, "en"),
     {
-      message: 'Cannot reach the local backend. Run run.bat again, wait for "Speak Plainly is ready", then retry.',
+      message: 'Cannot reach the local backend. Run run.bat again, wait for "AI-Writing-without-AI-feel is ready", then retry.',
     },
     "English API calls should expose the same actionable recovery path"
   );

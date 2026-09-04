@@ -15,8 +15,8 @@ export interface ParagraphDTO {
 const BASE = "/api";
 
 const LOCAL_BACKEND_UNAVAILABLE: Record<Lang, string> = {
-  en: 'Cannot reach the local backend. Run run.bat again, wait for "Speak Plainly is ready", then retry.',
-  zh: "无法连接本地后端。请重新运行 run.bat，等命令行显示“Speak Plainly is ready”后再试。",
+  en: 'Cannot reach the local backend. Run run.bat again, wait for "AI-Writing-without-AI-feel is ready", then retry.',
+  zh: "无法连接本地后端。请重新运行 run.bat，等命令行显示“AI-Writing-without-AI-feel is ready”后再试。",
 };
 
 async function apiFetch(input: RequestInfo | URL, init: RequestInit | undefined, lang: Lang): Promise<Response> {

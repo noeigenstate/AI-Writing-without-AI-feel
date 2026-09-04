@@ -1,4 +1,4 @@
-/* Speak Plainly — editorial copy-desk workbench. */
+/* AI-Writing-without-AI-feel — editorial copy-desk workbench. */
 
 :root {
   color-scheme: light;
@@ -225,13 +225,9 @@ button.link:hover {
   font-family: var(--display-en);
   font-size: 24px;
   font-weight: 700;
+  line-height: 1.04;
   letter-spacing: -0.015em;
-}
-
-.brand-zh {
-  color: var(--cyan);
-  font-family: var(--display-zh);
-  font-size: 20px;
+  overflow-wrap: anywhere;
 }
 
 .side-nav {
@@ -2137,10 +2133,6 @@ footer.hint {
 
   .side-brand strong {
     font-size: 19px;
-  }
-
-  .brand-zh {
-    font-size: 15px;
   }
 
   .side-nav {
