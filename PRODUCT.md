@@ -12,7 +12,7 @@ Primary users are Chinese-speaking writers, editors, and independent content cre
 
 ## Product Purpose
 
-AI-Writing-without-AI-feel is a writing workbench for rewriting Word documents, generating articles from a title or domain, reviewing source material, editing sentence by sentence, and exporting finished work. Success means the user can move from draft or idea to credible, natural-sounding, editable copy without stitching together several tools.
+AI写作 is a writing workbench for rewriting Word documents, generating articles from a title or domain, reviewing source material, editing sentence by sentence, and exporting finished work. Success means the user can move from draft or idea to credible, natural-sounding, editable copy without stitching together several tools.
 
 ## Positioning
 
@@ -28,11 +28,11 @@ The current application is a local-first React/Vite web app commonly launched on
 - The interface must remain usable during 30–90 second model operations and when individual research providers fail.
 - The frontend stack is React 18, TypeScript, Zustand, and Vite with no component-library dependency.
 - The application must remain responsive and must not rely on remote decorative assets to render its core interface.
-- The redesign may replace the complete incumbent visual identity and Logo; the user explicitly delegated the new direction.
+- The product identity is text-only: show the name without a logo or favicon.
 
 ## Brand Commitments
 
-Retain the name “AI-Writing-without-AI-feel”. The voice is direct, calm, literate, and credible rather than promotional. The previous gradient chat-bubble logo and pastel SaaS styling are not protected and should not be retained.
+Retain the name “AI写作”. The voice is direct, calm, literate, and credible rather than promotional. Use a text-only wordmark; do not display a logo or favicon.
 
 ## Evidence on Hand
 

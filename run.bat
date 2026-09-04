@@ -1,6 +1,6 @@
 @echo off
 REM ===========================================================================
-REM One-click launcher for AI-Writing-without-AI-feel (Windows).
+REM One-click launcher for AI写作 (Windows).
 REM Creates backend\.env on first run, installs dependencies, then runs the
 REM backend and frontend together in this terminal.
 REM ===========================================================================
@@ -14,7 +14,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo - Closing previous AI-Writing-without-AI-feel services...
+echo - Closing previous AI写作 services...
 call "%~dp0stop.bat" >nul 2>nul
 
 for /f "usebackq delims=" %%P in (`node "%~dp0scripts\find-open-port.mjs" 51773`) do set "FRONTEND_PORT=%%P"
@@ -59,7 +59,7 @@ if not exist "frontend\node_modules" (
 )
 
 echo.
-echo Starting AI-Writing-without-AI-feel in this terminal...
+echo Starting AI写作 in this terminal...
 echo Waiting for the frontend and backend to become ready...
 echo.
 

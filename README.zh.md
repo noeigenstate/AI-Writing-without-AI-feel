@@ -1,6 +1,6 @@
 <div align="center">
 
-# AI-Writing-without-AI-feel
+# AI写作
 
 **把 AI 味很重的初稿，改成更像真人写的文字。**
 

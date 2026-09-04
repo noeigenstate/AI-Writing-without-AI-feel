@@ -1,4 +1,4 @@
-/* AI-Writing-without-AI-feel — editorial copy-desk workbench. */
+/* AI写作 — editorial copy-desk workbench. */
 
 :root {
   color-scheme: light;
@@ -201,33 +201,17 @@ button.link:hover {
 }
 
 .side-brand {
-  display: grid;
-  gap: 14px;
-  padding: 2px 10px 34px;
-}
-
-.side-brand .logo {
   display: block;
-  width: 58px;
-  height: 58px;
-  color: var(--paper-strong);
-}
-
-.side-brand .brand-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  line-height: 1.08;
+  padding: 10px 10px 34px;
 }
 
 .side-brand strong {
   color: #f8fbf6;
-  font-family: var(--display-en);
+  font-family: var(--display-zh), var(--display-en);
   font-size: 24px;
   font-weight: 700;
   line-height: 1.04;
   letter-spacing: -0.015em;
-  overflow-wrap: anywhere;
 }
 
 .side-nav {
@@ -458,19 +442,13 @@ button.link:hover {
   color: currentColor;
 }
 
-.icon-img:not(.icon-brand) path {
+.icon-img path {
   fill: none;
   stroke: currentColor;
   stroke-width: 1.7;
   stroke-linecap: square;
   stroke-linejoin: miter;
   vector-effect: non-scaling-stroke;
-}
-
-.icon-brand {
-  width: 100%;
-  height: 100%;
-  fill: currentColor;
 }
 
 .banner {
@@ -2120,15 +2098,8 @@ footer.hint {
   }
 
   .side-brand {
-    display: flex;
-    align-items: center;
-    gap: 10px;
+    display: block;
     padding: 0;
-  }
-
-  .side-brand .logo {
-    width: 38px;
-    height: 38px;
   }
 
   .side-brand strong {
@@ -2236,10 +2207,6 @@ footer.hint {
   .sidebar {
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 10px;
-  }
-
-  .side-brand .brand-text {
-    display: none;
   }
 
   .side-nav {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# One-click launcher for AI-Writing-without-AI-feel.
+# One-click launcher for AI写作.
 # Starts the backend and the frontend dev server together, installing
 # dependencies and creating backend/.env on first run.
 #
@@ -40,7 +40,7 @@ fi
 pids=()
 cleanup() {
   echo
-  echo "Stopping AI-Writing-without-AI-feel..."
+  echo "Stopping AI写作..."
   for pid in "${pids[@]}"; do
     kill "$pid" 2>/dev/null || true
   done
@@ -71,7 +71,7 @@ echo "▶ Starting frontend (dev server URL is printed below)"
 pids+=("$!")
 
 echo
-echo "AI-Writing-without-AI-feel is starting. Open the frontend URL shown above in your browser."
+echo "AI写作 is starting. Open the frontend URL shown above in your browser."
 echo "Press Ctrl+C or run ./stop.sh from another shell to stop both servers."
 
 # Exit (and trigger cleanup) as soon as either server stops.

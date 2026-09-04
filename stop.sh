@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Stop script for AI-Writing-without-AI-feel.
+# Stop script for AI写作.
 # Stops backend/frontend processes started from this checkout. The backend also
 # has a port-based fallback for the default API port (8787).
 #
@@ -75,7 +75,7 @@ collect_project_pids "$FRONTEND" "$FRONTEND_WIN" "npm run dev" "vite" "node_modu
 collect_port_pids 8787
 
 if ((${#pids[@]} == 0)); then
-  echo "No matching AI-Writing-without-AI-feel service processes were running."
+  echo "No matching AI写作 service processes were running."
   exit 0
 fi
 
@@ -84,7 +84,7 @@ while read -r pid; do
   unique_pids+=("$pid")
 done < <(printf '%s\n' "${pids[@]}" | sort -n -u)
 
-echo "Stopping AI-Writing-without-AI-feel services: ${unique_pids[*]}"
+echo "Stopping AI写作 services: ${unique_pids[*]}"
 kill "${unique_pids[@]}" 2>/dev/null || true
 sleep 1
 

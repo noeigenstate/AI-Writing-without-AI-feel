@@ -4,7 +4,7 @@ import UploadPanel from "./components/upload/UploadPanel.js";
 import ArticleGenerator from "./components/generate/ArticleGenerator.js";
 import DocEditor from "./components/editor/DocEditor.js";
 import ScoreBar from "./components/editor/ScoreBar.js";
-import { ChatLogo, Sparkle, WordIcon } from "./components/common/icons.js";
+import { Sparkle, WordIcon } from "./components/common/icons.js";
 import ProgressBanner from "./components/common/ProgressBanner.js";
 import { messages } from "./lib/i18n.js";
 
@@ -33,12 +33,7 @@ export default function App() {
     <div className="layout" data-mode={mode}>
       <aside className="sidebar">
         <div className="side-brand">
-          <span className="logo">
-            <ChatLogo />
-          </span>
-          <div className="brand-text">
-            <strong>AI-Writing-without-AI-feel</strong>
-          </div>
+          <strong>AI写作</strong>
         </div>
 
         <nav className="side-nav" aria-label={t.navTools}>
@@ -79,7 +74,7 @@ export default function App() {
 
       <div className="main-pane">
         <div className="workspace-folio" aria-hidden="true">
-          <span>AIW—001</span>
+          <span>AI—001</span>
           <span>
             {mode === "rewrite"
               ? (lang === "zh" ? "改写工作台" : "REWRITE DESK")

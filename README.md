@@ -1,6 +1,6 @@
 <div align="center">
 
-# AI-Writing-without-AI-feel
+# AI写作
 
 **Turn AI-shaped drafts into writing that reads like a person wrote it.**
 

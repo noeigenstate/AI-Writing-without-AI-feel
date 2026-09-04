@@ -10,15 +10,6 @@ export function CloudUp({ className = "" }: IconProps) {
   );
 }
 
-export function ChatLogo() {
-  return (
-    <svg className="icon-img icon-brand" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
-      <path d="M6 7h23v27c0 11-6.5 18.5-19.5 23L6 47.5c7.5-3 11.5-7.5 12-13.5H6V7Z" />
-      <path d="M35 7h23v27c0 11-6.5 18.5-19.5 23L35 47.5c7.5-3 11.5-7.5 12-13.5H35V7Z" />
-    </svg>
-  );
-}
-
 export function Sparkle({ className = "" }: IconProps) {
   return (
     <svg className={`icon-img ${className}`.trim()} viewBox="0 0 24 24" aria-hidden="true" focusable="false">

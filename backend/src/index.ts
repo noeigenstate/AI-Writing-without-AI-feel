@@ -13,5 +13,5 @@ if (proxyStatus === "enabled") {
 const app = createApp();
 
 app.listen(config.port, config.host, () => {
-  console.log(`AI-Writing-without-AI-feel backend listening on http://${config.host}:${config.port}`);
+  console.log(`AI写作 backend listening on http://${config.host}:${config.port}`);
 });
