@@ -18,7 +18,7 @@ const SCENES: WritingScene[] = [
   {
     id: "wechat",
     profile: {
-      zh: "文体场景：公众号文章。要求：开头直接给场景或判断，段落短，论点先行；允许轻微口语感，但不要营销号夸张和假互动。修辞强度：中等；可用开头场景与结尾回扣，有材料支撑时最多一次欲扬先抑，拟人和情景交融点到为止，情绪线以“疑问—落差—转折—理解”为主。",
+      zh: "文体场景：公众号文章。要求：开头直接给场景或判断，论点先行；允许轻微口语感，但不要营销号夸张和假互动。成稿后按 lieflat-less-ai-tone 的白名单规则做最小清理：未明确命中的句子、文章结构、事实、数字、引用和来源保持不变，不为了制造节奏强拆段落或长句。修辞强度：中等；可用开头场景与结尾回扣，普通问句、句内排比和有信息价值的比喻不视为 AI 痕迹。",
       en: "Writing scene: newsletter/article. Open with a scene or judgment, keep paragraphs short, lead with claims, and avoid hype or fake engagement. Rhetorical intensity: moderate; use an opening scene with a closing echo, at most one evidence-backed contrast-before-reveal, and only sparing personification or scene-emotion. Prefer a question → tension → turn → clarity arc.",
     },
   },

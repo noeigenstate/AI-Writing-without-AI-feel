@@ -4,6 +4,7 @@ import type { DocxBlock, ParaKind } from "./docx.js";
 import type { ResearchItem } from "./research/types.js";
 import { fetchSafeImageBinary, type SafeImageBinary } from "./research/images.js";
 import type { LicensedMediaItem } from "./research/licensedMedia.js";
+import { applyLieflatLessAiTone } from "./lessAiTone.js";
 import {
   articleDraftPrompt,
   articleFlowFixPrompt,
@@ -461,13 +462,34 @@ export async function generateArticleDraft(
   ) {
     article = normalized;
   }
-  const length = measureArticleLength(article.paragraphs, lang, targetLength);
+  let length = measureArticleLength(article.paragraphs, lang, targetLength);
   if (!length.inRange) {
     const message =
       lang === "zh"
         ? `模型在 ${MAX_LENGTH_FIX_PASSES} 轮校准后仍未达到目标字数（实际 ${length.actual}，目标 ${length.min}-${length.max}），请重试。`
         : `The model still missed the requested length after ${MAX_LENGTH_FIX_PASSES} correction passes (actual ${length.actual}, target ${length.min}-${length.max}). Please retry.`;
     throw new ArticleLengthTargetError(message, length);
+  }
+
+  // lieflat-less-ai-tone is explicitly a finished-draft cleanup skill. Apply
+  // it only to Chinese WeChat articles, after flow and length correction, and
+  // keep the pass non-blocking. Its patch validator preserves citations and
+  // protected tokens; the boundary below also rejects structural/length drift.
+  if (lang === "zh" && input.sceneId === "wechat") {
+    try {
+      const cleaned = await applyLieflatLessAiTone(article, input.styleSummary, ask);
+      const cleanedLength = measureArticleLength(cleaned.paragraphs, lang, targetLength);
+      if (
+        cleaned.paragraphs.length === article.paragraphs.length
+        && cleanedLength.inRange
+        && preservesExistingCitations(article, cleaned)
+      ) {
+        article = cleaned;
+        length = cleanedLength;
+      }
+    } catch {
+      // Optional tone cleanup must never discard an otherwise valid article.
+    }
   }
   return { ...article, length };
 }

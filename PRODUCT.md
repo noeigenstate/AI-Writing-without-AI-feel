@@ -25,6 +25,7 @@ The current application is a local-first React/Vite web app commonly launched on
 ## Capabilities and Constraints
 
 - Preserve Rewrite Word, Generate Article, and Write Novel modes, their independent in-progress state, bilingual UI, editing, scoring, and export behavior. Source preview and citations apply only to Generate Article.
+- Chinese WeChat article generation may run the pinned `lieflat-less-ai-tone` whitelist cleanup after the draft is valid. It must preserve article structure, evidence, citations, protected tokens, and the accepted length band; failure remains non-blocking.
 - The interface must remain usable during 30–90 second model operations and when individual research providers fail.
 - The frontend stack is React 18, TypeScript, Zustand, and Vite with no component-library dependency.
 - The application must remain responsive and must not rely on remote decorative assets to render its core interface.

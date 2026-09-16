@@ -36,6 +36,7 @@
 - **显示模型工作进度**：创作小说、生成文章、整篇润色、标题候选、选题生成都会显示百分比、当前阶段和日志。
 - **根据故事设定写小说**：标题可以留空，再选择题材、叙事视角、故事基调和篇幅；生成后进入同一个逐句编辑器，并可导出 Word。
 - **按标题或领域生成文章**：默认搜索相关网页文章、公开评论、arXiv 论文和新闻 RSS，合理转述或短摘录，并带来源、图表和引用。
+- **公众号中文成稿做白名单式去 AI 味**：接入 `lieflat-less-ai-tone` 的明确触发规则，只改命中的句子，同时保护文章结构、事实、引用、数字、网址、英文专名和引语。
 - **让真实来源素材贯穿完整流程**：后端下载并校验带署名的网络图片或 GIF，同一份安全字节会用于编辑器预览、Word 和公众号导出。
 - **生成文章后一键排版公众号**：在文章编辑器里选主题、点「自动排版」，排版结果一键复制、直接粘贴进微信公众号编辑器，样式不丢。
 - **可以本地私有运行**：支持 Ollama、LM Studio、vLLM 等 OpenAI 兼容接口。
@@ -174,6 +175,12 @@ Google News 和 Hacker News 检索不需要密钥。在 `backend/.env` 中配置
 
 小说创作沿用同一套经过校验的篇幅范围，但不会启动网页检索，也不会添加引用。微短篇和短篇会形成紧凑的完整叙事，长档则生成具有完整场景弧和后续张力的长篇开篇。后续逐句润色会带上小说连续性约束，避免擅自增加关键情节。
 
+## 公众号中文成稿白名单清理
+
+选择 **公众号** 写作场景并生成中文文章时，系统会在首稿完成后追加一次可选清理。规则改编自 [`lieflat-less-ai-tone`](https://github.com/larashero3-dotcom/lieflat-less-ai-tone)，固定使用上游提交 `27d29232f10124db904ca9c0536d0b67cb3b2833`。该 skill 基于 283 万字人类与模型语料对比，核心原则是只处理可定位的白名单问题，不凭“读起来像 AI”随意改文。
+
+本项目会先做本地触发检查；没有命中就不会增加模型调用。需要清理时，模型只能返回带上游规则编号的段落补丁。后端会拒绝没有对应触发标记、改完仍未解决触发项、整段重写、导致字数越界、丢失引用，或改动数字、网址、英文专名和引语的补丁。段落顺序、语义角色、小标题位置、配图计划、参考资料和研究事实都不进入这一步。清理失败不会阻断生成，系统会继续使用上一版已经通过校验的有来源文章。
+
 ## 公众号排版
 
 生成文章后，编辑器顶部会出现排版工具条：下拉选一套主题、点「**自动排版**」，文章就被转成能安全粘贴进微信公众号编辑器的 HTML——全部内联样式、文字节点 `<span leaf="">` 包裹、不用 `<div>`/`class`/`id`、正文全角标点。
@@ -201,6 +208,7 @@ LLM_REASONING_EFFORT=off
 cd backend
 npm run build
 npm run test:article
+npm run test:less-ai-tone
 npm run test:novel
 npm run test:research
 npm run test:research-security
@@ -224,9 +232,10 @@ npm run test:novel-ui
 ```text
 backend/
   src/routes/      API 路由
-  src/services/    改写、文章、小说、Word、评分、资料检索、公众号排版
+  src/services/    改写、文章、小说、白名单语气清理、Word、评分、资料检索、公众号排版
   src/prompts/     模型提示词
   assets/gzh/      公众号主题组件库（来自 gzh-design-skill）
+  assets/skills/   第三方写作 skill 的来源说明与许可证
 
 frontend/
   src/components/  上传、文章生成、小说生成、公众号排版、编辑器、通用组件
@@ -247,6 +256,8 @@ docs/                设计资料
 ## 许可证
 
 本项目自身代码：[MIT](LICENSE)。
+
+公众号中文白名单清理改编自 shiujan 的 [`lieflat-less-ai-tone`](https://github.com/larashero3-dotcom/lieflat-less-ai-tone)，采用 MIT 协议。固定来源提交和随附许可证位于 [`backend/assets/skills/lieflat-less-ai-tone/`](backend/assets/skills/lieflat-less-ai-tone/)。
 
 > **⚠️ 重点：内含 AGPL-3.0 内容。** 公众号排版功能整合了 [gzh-design-skill](https://github.com/isjiamu/gzh-design-skill)（作者：甲木 × 摸鱼小李）的主题组件库和校验规则，该项目采用 **AGPL-3.0** 协议（完整文本见 `backend/assets/gzh/LICENSE`）。
 

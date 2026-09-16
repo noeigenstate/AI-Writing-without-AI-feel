@@ -36,6 +36,7 @@ Open-source AI writing workbench for **Word rewriting**, **fiction writing**, **
 - **Show progress while the model works** for fiction and article writing, whole-document rewriting, title options, and topic generation.
 - **Write fiction from a story brief**: optionally provide a title, then choose genre, viewpoint, tone, and length. The result opens in the same sentence-level editor and exports to Word.
 - **Generate an article from a title or domain** with default searches across relevant web articles, public comments, arXiv papers, and RSS news, using attributed paraphrases or short excerpts.
+- **Clean Chinese WeChat drafts with a whitelist pass** adapted from `lieflat-less-ai-tone`: only explicit AI-tone triggers may change, while structure, facts, citations, numbers, URLs, English identifiers, and quotations remain protected.
 - **Carry verified source media through the full workflow**: the backend downloads and validates attributed web images or GIFs, then reuses the same bytes in the editor, Word, and WeChat export.
 - **Auto-format generated articles for the WeChat Official Account editor**: pick a visual theme in the article editor, click Auto-format, then copy the result straight into 公众号 with one click.
 - **Run privately** with any OpenAI-compatible endpoint, including local model servers.
@@ -174,6 +175,12 @@ Length tiers use explicit body-only ranges: Chinese short 450–650 characters, 
 
 Fiction generation uses those same validated length bands, but it does not invoke web research or add citations. Short and medium produce compact fiction forms; the long tier produces an opening chapter with a complete scene arc and forward pressure. The generation prompt preserves the chosen viewpoint and tone, and later sentence polishing receives a fiction-specific continuity guard so it does not invent new plot events.
 
+## Whitelist Cleanup for Chinese WeChat Articles
+
+Chinese articles generated with the **WeChat / 公众号** writing scene receive one optional post-draft cleanup adapted from [`lieflat-less-ai-tone`](https://github.com/larashero3-dotcom/lieflat-less-ai-tone), pinned to upstream commit `27d29232f10124db904ca9c0536d0b67cb3b2833`. The upstream skill is based on a 2.83-million-character corpus comparison and deliberately rejects broad “make it sound human” heuristics.
+
+The integration is conservative by design. It first checks for the upstream whitelist triggers; a clean draft causes no extra model call. When cleanup is needed, the model must return paragraph patches tagged with upstream rule numbers. The backend rejects patches without a matching trigger, patches that still contain the claimed trigger, wholesale rewrites, length drift, citation loss, or changes to numbers, URLs, English identifiers, and quoted text. Paragraph order, semantic roles, section positions, media plans, references, and factual research remain outside the cleanup pass. Failure is non-blocking: the last valid sourced draft continues through the normal pipeline.
+
 ## WeChat Formatting (公众号排版)
 
 After generating an article, the editor shows a formatting bar: pick a theme from the dropdown, click **Auto-format**, and the article is converted into HTML that survives pasting into the WeChat Official Account editor — inline styles only, every text node wrapped in `<span leaf="">`, no `<div>`/`class`/`id`, full-width punctuation in prose.
@@ -201,6 +208,7 @@ LLM_REASONING_EFFORT=off
 cd backend
 npm run build
 npm run test:article
+npm run test:less-ai-tone
 npm run test:novel
 npm run test:research
 npm run test:research-security
@@ -224,9 +232,10 @@ npm run test:novel-ui
 ```text
 backend/
   src/routes/      API endpoints
-  src/services/    rewrite, article, novel, docx, score, research, gzh formatting
+  src/services/    rewrite, article, novel, whitelist tone cleanup, docx, score, research, gzh formatting
   src/prompts/     model prompts
   assets/gzh/      WeChat theme component libraries (from gzh-design-skill)
+  assets/skills/   Third-party writing-skill notices and licenses
 
 frontend/
   src/components/  upload, article generation, novel generation, gzh, editor, common UI
@@ -247,6 +256,8 @@ docs/                design notes
 ## License
 
 This project's own code is under [MIT](LICENSE).
+
+The Chinese WeChat whitelist cleanup adapts [`lieflat-less-ai-tone`](https://github.com/larashero3-dotcom/lieflat-less-ai-tone) by shiujan under the MIT License. The pinned source and bundled license are in [`backend/assets/skills/lieflat-less-ai-tone/`](backend/assets/skills/lieflat-less-ai-tone/).
 
 > **⚠️ Important — bundled AGPL-3.0 content.** The WeChat formatting feature integrates theme component libraries and validation rules from [gzh-design-skill](https://github.com/isjiamu/gzh-design-skill) by 甲木 (Jiamu) × 摸鱼小李 (Moyu Xiaoli), licensed under **AGPL-3.0** (full text: `backend/assets/gzh/LICENSE`).
 
