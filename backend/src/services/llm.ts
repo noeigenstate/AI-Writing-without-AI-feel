@@ -10,6 +10,8 @@ const client = new OpenAI({
 export interface ChatOptions {
   system?: string;
   temperature?: number;
+  /** Per-request transport timeout; omit to use the SDK default. */
+  timeoutMs?: number;
   /**
    * Disable provider-side reasoning for strict structured-output calls.
    *
@@ -32,13 +34,16 @@ export async function chat(prompt: string, opts: ChatOptions = {}): Promise<stri
   if (opts.system) messages.push({ role: "system", content: opts.system });
   messages.push({ role: "user", content: prompt });
 
-  const res = await client.chat.completions.create({
-    model: config.llm.model,
-    temperature: opts.temperature ?? config.llm.temperature,
-    messages,
-    stream: false,
-    ...deepSeekOptions(opts),
-  } as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming & Record<string, unknown>);
+  const res = await client.chat.completions.create(
+    {
+      model: config.llm.model,
+      temperature: opts.temperature ?? config.llm.temperature,
+      messages,
+      stream: false,
+      ...deepSeekOptions(opts),
+    } as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming & Record<string, unknown>,
+    opts.timeoutMs ? { timeout: opts.timeoutMs } : undefined
+  );
   return res.choices[0]?.message?.content ?? "";
 }
 
@@ -59,13 +64,16 @@ export async function chatStream(
   if (opts.system) messages.push({ role: "system", content: opts.system });
   messages.push({ role: "user", content: prompt });
 
-  const stream = await client.chat.completions.create({
-    model: config.llm.model,
-    temperature: opts.temperature ?? config.llm.temperature,
-    messages,
-    stream: true,
-    ...deepSeekOptions(opts),
-  } as OpenAI.Chat.ChatCompletionCreateParamsStreaming & Record<string, unknown>);
+  const stream = await client.chat.completions.create(
+    {
+      model: config.llm.model,
+      temperature: opts.temperature ?? config.llm.temperature,
+      messages,
+      stream: true,
+      ...deepSeekOptions(opts),
+    } as OpenAI.Chat.ChatCompletionCreateParamsStreaming & Record<string, unknown>,
+    opts.timeoutMs ? { timeout: opts.timeoutMs } : undefined
+  );
 
   let full = "";
   for await (const part of stream) {

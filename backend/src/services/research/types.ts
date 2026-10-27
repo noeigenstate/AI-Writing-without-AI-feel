@@ -31,6 +31,8 @@ export interface ResearchItem {
   summary: string;
   /** A short verbatim passage that may be quoted sparingly with attribution. */
   excerpt?: string;
+  /** Bounded source-page text used only by the evidence extractor, never sent to clients. */
+  content?: string;
   url: string;
   imageUrl?: string;
   publishedAt: string;

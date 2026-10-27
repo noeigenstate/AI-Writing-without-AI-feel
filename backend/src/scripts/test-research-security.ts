@@ -328,15 +328,30 @@ assert.equal(yieldedChunks, 3, "stream reader must stop as soon as the cap is cr
 assert.equal(oversizedResponseClosed, true);
 
 const dangerousQuery = `topic & calc.exe | whoami > pwned.txt %PATH% $(touch /tmp/pwned) "quoted"`;
-assert.equal(buildMcporterInvocation(dangerousQuery, 6, "win32"), undefined);
+const windowsInvocation = buildMcporterInvocation(
+  dangerousQuery,
+  6,
+  "win32",
+  { executable: "C:\\node.exe", cliPath: "C:\\node_modules\\mcporter\\dist\\cli.js" }
+);
+assert.ok(windowsInvocation);
+assert.equal(windowsInvocation.executable, "C:\\node.exe");
+assert.equal(windowsInvocation.options.shell, false);
+assert.equal(windowsInvocation.args.length, 5);
+assert.equal(windowsInvocation.args[0], "C:\\node_modules\\mcporter\\dist\\cli.js");
+assert.equal(windowsInvocation.args[1], "call");
+assert.match(windowsInvocation.args[2], /& calc\.exe/);
+assert.match(windowsInvocation.args[2], /numResults: 6/);
+assert.deepEqual(windowsInvocation.args.slice(3), ["--output", "json"]);
 assert.equal(mcporterExecOptions("win32").shell, false);
 const unixInvocation = buildMcporterInvocation(dangerousQuery, 6, "linux");
 assert.ok(unixInvocation);
 assert.equal(unixInvocation.options.shell, false);
-assert.equal(unixInvocation.args.length, 2);
+assert.equal(unixInvocation.args.length, 4);
 assert.equal(unixInvocation.args[0], "call");
 assert.match(unixInvocation.args[1], /& calc\.exe/);
 assert.match(unixInvocation.args[1], /numResults: 6/);
+assert.deepEqual(unixInvocation.args.slice(2), ["--output", "json"]);
 
 const parsedPublisher = parseAgentReachSearchOutput(
   JSON.stringify({ results: [{ title: "A domestic source", url: "https://www.36kr.com/p/123" }] }),

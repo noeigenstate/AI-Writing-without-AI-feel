@@ -161,6 +161,14 @@ The writing prompt tells the model to paraphrase web material by default. When e
 
 Inline `[n]` markers are kept only when they resolve to retrieved sources. The model is asked to cite factual claims and external material where possible, but missing markers do not block generation; out-of-range markers are stripped, uncited prose remains uncited, and the retrieved reference list is still attached. Source images are downloaded through the backend's outbound-safety policy and embedded in Word and browser preview data rather than loaded remotely by the browser.
 
+## Evidence Article Pipeline
+
+Full article generation now uses the repository-local [`evidence-article-pipeline`](.agents/skills/evidence-article-pipeline/SKILL.md). Research runs for at least two and at most ten gap-driven rounds. Each round separates source-bound objective facts from opinion, discards public-comment-only claims from the fact ledger, derives specific keywords and unanswered questions, and stops early when the evidence is saturated. Selected sources are checked against Exa/Agent-Reach highlights or bounded source-page text fetched through the outbound safety policy, so the fact extractor is not limited to search snippets. Full source text stays backend-only. If critical gaps remain after round ten, generation continues from the verified subset in limited-evidence mode: conclusions are narrowed and material gaps are disclosed instead of invented. The API blocks only when ten rounds produce no objective fact that can support an article.
+
+After saturation, the backend builds one time, space, event, causal, entity, or question-led clue graph. Every node points back to validated facts and source numbers; only sources with a retrieved real image can be assigned as visual evidence. The drafting prompt receives this fact ledger and clue graph ahead of the ordinary source list. The finished draft is then audited for factual support, citation fit, topic alignment, and—on Chinese WeChat runs—the whitelist tone gate. A failed draft can be regenerated against the same evidence up to three times; persistent failure is returned honestly rather than published.
+
+The skill also defines auditable `research.md`, `clue-graph.md`, `media-manifest.md`, `article.md`, `validation.md`, and `run.json` artifacts for agent-driven article work. Its validator rejects generated images that claim to prove a fact. An agent with `imagegen` may create a clearly labeled non-evidentiary illustration; the web runtime continues to use validated source images and licensed Openverse media only.
+
 ## Narrative and Multimedia
 
 Before drafting, the model internally merges duplicated material and organizes it as reader question → evidence → mechanism → dispute/limits → practical judgment, rather than summarizing one source after another. Paragraph roles and section anchors make medium and long pieces scannable. If the opening, evidence, explanation, or closing callback is seriously broken, one optional flow-repair pass may run; it is non-blocking and never turns a usable draft into a hard failure.
@@ -171,7 +179,7 @@ The system uses only relevant, attributable network images or GIFs whose origina
 
 ## Article Length Targets
 
-Length tiers use explicit body-only ranges: Chinese short 450–650 characters, medium 1,000–1,300, and long 3,000–3,800; English short 350–500 words, medium 850–1,100, and long 2,200–2,800. If the first draft misses its band, the backend runs up to two corrective passes. A generation request succeeds only when the final body is inside its selected range; a persistent miss returns a retryable error instead of an off-target article. The final count and target range travel with successful responses and update live while editing. Titles, references, inline citation markers, figure captions, and tables do not count toward the body target.
+Length tiers use explicit body-only ranges: Chinese short 450–650 characters, medium 1,000–1,300, and long 3,000–3,800; English short 350–500 words, medium 850–1,100, and long 2,200–2,800. If the first draft misses its band, the backend runs up to five corrective passes. A generation request succeeds only when the final body is inside its selected range; a persistent miss returns a retryable error instead of an off-target article. The final count and target range travel with successful responses and update live while editing. Titles, references, inline citation markers, figure captions, and tables do not count toward the body target.
 
 Fiction generation uses those same validated length bands, but it does not invoke web research or add citations. Short and medium produce compact fiction forms; the long tier produces an opening chapter with a complete scene arc and forward pressure. The generation prompt preserves the chosen viewpoint and tone, and later sentence polishing receives a fiction-specific continuity guard so it does not invent new plot events.
 
@@ -211,6 +219,7 @@ npm run test:article
 npm run test:less-ai-tone
 npm run test:novel
 npm run test:research
+npm run test:evidence-pipeline
 npm run test:research-security
 npm run test:licensed-media
 npm run test:docx
@@ -244,6 +253,7 @@ frontend/
 
 assets/screenshots/  README screenshots
 docs/                design notes
+.agents/skills/evidence-article-pipeline/  auditable research-to-article skill and validator
 ```
 
 ## Notes

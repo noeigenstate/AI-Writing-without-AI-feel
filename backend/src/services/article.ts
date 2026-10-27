@@ -157,6 +157,8 @@ export interface GenerateArticleInput {
   targetLength?: ArticleLengthTier;
   researchContext?: string;
   researchCoverage?: ResearchCoverageSummary;
+  /** Bounded evidence-gate feedback from a rejected complete draft. */
+  qualityRepairInstruction?: string;
   sceneId?: string;
   styleId?: string;
   lang?: Lang;
@@ -363,7 +365,7 @@ export async function generateTopicOptions(
 }
 
 /** How many corrective passes to attempt before an off-target draft is rejected. */
-const MAX_LENGTH_FIX_PASSES = 2;
+const MAX_LENGTH_FIX_PASSES = 5;
 /** One optional, non-blocking pass for a seriously broken narrative spine. */
 const MIN_ACCEPTABLE_READING_FLOW_SCORE = 66;
 /** Measure body-only length using the shared language-specific counting rule. */
@@ -784,8 +786,8 @@ async function requestOptionalArticleJson(
 /**
  * Resolve a small model counting mismatch deterministically at the boundary.
  *
- * Providers regularly miss an exact character/word target even after two
- * correction passes. A bounded overrun is compacted through optional, uncited
+ * Providers regularly miss an exact character/word target even after the
+ * bounded correction passes. A bounded overrun is compacted through optional, uncited
  * middle beats while protecting the hook, evidence, sole turn, and close. A small
  * underrun gets a short, non-factual transition; larger underruns still fail
  * through the existing typed length error.
@@ -1288,6 +1290,38 @@ export async function enrichArticleWithResearch(
     figure: lead,
     bodyFigures: body,
   };
+}
+
+/**
+ * Re-run the deterministic figure/source/body relationship gate after all
+ * source and licensed-media figures have been attached.
+ */
+export function articleMediaMatchesBody(
+  article: GeneratedArticle,
+  researchItems: ResearchItem[],
+  supplementalMedia: LicensedMediaItem[] = []
+): boolean {
+  const evidenceItems = researchItems.slice(0, 16);
+  const allItems = [...evidenceItems, ...supplementalMedia.map(licensedMediaResearchItem)];
+  const figures = [...(article.figure ? [article.figure] : []), ...(article.bodyFigures ?? [])];
+  return figures.every((figure) => {
+    if (!isSafeArticleFigure(figure)) return false;
+    const item = allItems[figure.sourceRef - 1];
+    if (!item || item.url !== figure.sourceUrl) return false;
+    const paragraphIndex = figure.afterParagraphIndex ?? 0;
+    if (paragraphIndex < 0 || paragraphIndex >= article.paragraphs.length) return false;
+    const paragraph = article.paragraphs[paragraphIndex] ?? "";
+    const hints = article.mediaHints?.filter((hint) => hint.afterParagraphIndex === paragraphIndex) ?? [];
+    const directCitation = [...paragraph.matchAll(/\[(\d+)\]/gu)]
+      .some((match) => Number(match[1]) === figure.sourceRef);
+    const sourceHint = hints.some((hint) => hint.sourceRefs.includes(figure.sourceRef));
+    const targetText = [
+      article.title,
+      paragraph,
+      ...hints.flatMap((hint) => [hint.query, hint.alt]),
+    ].join(" ");
+    return directCitation || sourceHint || hasSignificantSourceImageMatch(targetText, item);
+  });
 }
 
 /** Validate and normalize one raw topic object; returns null if it lacks a title. */

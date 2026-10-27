@@ -5,6 +5,7 @@ import {
   getArticleDomains,
   articleToDocBlocks,
   articleToRenderBlocks,
+  articleMediaMatchesBody,
   enrichArticleWithResearch,
   generateArticleDraft,
   ArticleLengthTargetError,
@@ -17,9 +18,20 @@ import {
   type TopicOption,
 } from "../services/article.js";
 import { collectResearch, formatResearchContext } from "../services/research/aggregate.js";
-import { enrichResearchImages } from "../services/research/images.js";
+import {
+  ArticleEvidenceIncompleteError,
+  collectArticleEvidence,
+  formatArticleEvidenceContext,
+  hasDraftableEvidence,
+  type ArticleEvidenceResult,
+} from "../services/research/evidencePipeline.js";
 import { searchLicensedMediaForArticle } from "../services/research/licensedMedia.js";
 import type { ResearchBundle } from "../services/research/types.js";
+import {
+  ArticleEvidenceValidationError,
+  auditArticleEvidenceDraft,
+  evidenceDraftRepairInstruction,
+} from "../services/articleEvidenceAudit.js";
 import { titleIndexOf } from "../services/rewrite.js";
 import { saveDoc } from "../core/store.js";
 import { getBuiltinStyle } from "../data/styles.js";
@@ -119,6 +131,14 @@ router.post("/api/article/generate", async (req, res) => {
       res.status(422).json({ error: tr(SERVER_MESSAGES.invalidArticleOutput, normalizeLang(req.body?.lang)) });
       return;
     }
+    if (e instanceof ArticleEvidenceIncompleteError) {
+      res.status(422).json({ error: e.message, evidence: e.evidence });
+      return;
+    }
+    if (e instanceof ArticleEvidenceValidationError) {
+      res.status(422).json({ error: e.message, audit: e.audit, repairCycles: e.repairCycles });
+      return;
+    }
     res.status(500).json({ error: (e as Error).message });
   }
 });
@@ -169,6 +189,14 @@ router.post("/api/article/generate-from-title", async (req, res) => {
       res.status(422).json({ error: tr(SERVER_MESSAGES.invalidArticleOutput, normalizeLang(req.body?.lang)) });
       return;
     }
+    if (e instanceof ArticleEvidenceIncompleteError) {
+      res.status(422).json({ error: e.message, evidence: e.evidence });
+      return;
+    }
+    if (e instanceof ArticleEvidenceValidationError) {
+      res.status(422).json({ error: e.message, audit: e.audit, repairCycles: e.repairCycles });
+      return;
+    }
     res.status(500).json({ error: (e as Error).message });
   }
 });
@@ -181,7 +209,7 @@ router.post("/api/article/generate-from-title", async (req, res) => {
  * @param input Resolved domain, topic, optional style/length, and language.
  * @returns The API payload (docId, render blocks, paragraphs, research bundle).
  */
-async function generateArticlePayload(input: {
+export async function generateArticlePayload(input: {
   domain: ArticleDomain;
   topic: TopicOption | string;
   styleId?: string;
@@ -192,34 +220,77 @@ async function generateArticlePayload(input: {
   const { lang } = input;
   const targetLength = input.targetLength ?? "medium";
   const topicTitle = typeof input.topic === "string" ? input.topic : input.topic.title;
-  const bundle = await collectResearch(input.domain.name, topicTitle);
-  const imageItems = await enrichResearchImages(bundle.items);
-  const bundleWithImages = { ...bundle, items: imageItems };
-  const researchContext = formatResearchContext(bundleWithImages.items, 16);
+  const evidenceRun = await collectArticleEvidence(input.domain.name, topicTitle);
+  if (!hasDraftableEvidence(evidenceRun.evidence)) {
+    const message = lang === "zh"
+      ? `经过 ${evidenceRun.evidence.iterations} 轮检索仍没有可用于成文的客观事实，已停止生成：${evidenceRun.evidence.stopReason}`
+      : `Drafting stopped because ${evidenceRun.evidence.iterations} research rounds produced no objective claim that can support an article: ${evidenceRun.evidence.stopReason}`;
+    throw new ArticleEvidenceIncompleteError(message, evidenceRun.evidence);
+  }
+  const bundleWithImages = evidenceRun.bundle;
+  const researchContext = formatArticleEvidenceContext(evidenceRun);
   const builtin = input.styleId ? getBuiltinStyle(input.styleId, lang) : undefined;
   const sceneProfile = writingSceneProfile(input.sceneId, lang);
   const styleSummary = [sceneProfile, builtin?.profile ?? tr(ARTICLE_LABELS.defaultStyleSummary, lang)]
     .filter(Boolean)
     .join("\n\n");
-  const draft = await generateArticleDraft({
+  const draftInput = {
     domainName: input.domain.name,
     topic: input.topic,
     styleSummary,
     targetLength,
     researchContext,
-    researchCoverage: bundle.coverage,
+    researchCoverage: bundleWithImages.coverage,
     sceneId: input.sceneId,
     styleId: input.styleId,
     lang,
-  });
+  };
+  let draft = await generateArticleDraft(draftInput);
+  let draftAudit = await auditArticleEvidenceDraft(
+    topicTitle,
+    draft,
+    evidenceRun.evidence.claims,
+    Math.min(bundleWithImages.items.length, 16),
+    {
+      requireToneCheck: lang === "zh" && input.sceneId === "wechat",
+      evidenceSaturated: evidenceRun.evidence.saturated,
+      openGaps: latestCriticalGaps(evidenceRun.evidence),
+    }
+  );
+  let repairCycles = 0;
+  while (!draftAudit.pass && repairCycles < 3) {
+    repairCycles += 1;
+    draft = await generateArticleDraft({
+      ...draftInput,
+      qualityRepairInstruction: evidenceDraftRepairInstruction(draftAudit, repairCycles),
+    });
+    draftAudit = await auditArticleEvidenceDraft(
+      topicTitle,
+      draft,
+      evidenceRun.evidence.claims,
+      Math.min(bundleWithImages.items.length, 16),
+      {
+        requireToneCheck: lang === "zh" && input.sceneId === "wechat",
+        evidenceSaturated: evidenceRun.evidence.saturated,
+        openGaps: latestCriticalGaps(evidenceRun.evidence),
+      }
+    );
+  }
+  if (!draftAudit.pass) {
+    const message = lang === "zh"
+      ? "文章在 3 轮修复后仍未通过事实、引用、语气或主题一致性检查，已停止交付。"
+      : "The article still failed its fact, citation, tone, or topic-alignment gates after three repair cycles.";
+    throw new ArticleEvidenceValidationError(message, draftAudit, repairCycles);
+  }
   const desiredFigureCount = targetLength === "short" ? 2 : targetLength === "long" ? 6 : 4;
   let article = await enrichArticleWithResearch(
     draft,
     bundleWithImages.items,
-    new Date(bundle.generatedAt),
+    new Date(bundleWithImages.generatedAt),
     lang
   );
   const actualFigureCount = Number(Boolean(article.figure)) + (article.bodyFigures?.length ?? 0);
+  let supplementalMediaForValidation: Awaited<ReturnType<typeof searchLicensedMediaForArticle>> = [];
   if (actualFigureCount < desiredFigureCount) {
     const supplementalMedia = await searchLicensedMediaForArticle(
       draft,
@@ -227,14 +298,27 @@ async function generateArticlePayload(input: {
       desiredFigureCount - actualFigureCount
     );
     if (supplementalMedia.length > 0) {
+      supplementalMediaForValidation = supplementalMedia;
       article = await enrichArticleWithResearch(
         draft,
         bundleWithImages.items,
-        new Date(bundle.generatedAt),
+        new Date(bundleWithImages.generatedAt),
         lang,
         { supplementalMedia }
       );
     }
+  }
+  let mediaMatch = articleMediaMatchesBody(
+    article,
+    bundleWithImages.items,
+    supplementalMediaForValidation
+  );
+  if (!mediaMatch) {
+    // A missing image is safer than an image whose provenance/body relation no
+    // longer validates. This keeps the article deliverable without pretending
+    // that a discarded visual passed the gate.
+    article = { ...article, figure: undefined, bodyFigures: [] };
+    mediaMatch = articleMediaMatchesBody(article, bundleWithImages.items);
   }
   const length = measureArticleLength(article.paragraphs, lang, targetLength);
 
@@ -252,6 +336,15 @@ async function generateArticlePayload(input: {
     styleSummary,
     length,
     research: withoutRemoteImageUrls(bundleWithImages),
+    evidence: {
+      ...evidenceRun.evidence,
+      repairCycles,
+      validation: {
+        ...draftAudit,
+        length: length.inRange,
+        mediaMatch,
+      },
+    },
     renderBlocks,
     titleIndex: titleIndexOf(parsed.paragraphs),
     paragraphs: parsed.paragraphs.map((p) => ({
@@ -264,6 +357,12 @@ async function generateArticlePayload(input: {
   };
 }
 
+function latestCriticalGaps(evidence: ArticleEvidenceResult["evidence"]): string[] {
+  return evidence.rounds.at(-1)?.gaps
+    .filter((gap) => gap.critical)
+    .map((gap) => gap.question) ?? [];
+}
+
 /** Keep source-page attribution while withholding remote image URLs from API clients. */
 function withoutRemoteImageUrls(bundle: ResearchBundle): ResearchBundle {
   return {
@@ -271,6 +370,7 @@ function withoutRemoteImageUrls(bundle: ResearchBundle): ResearchBundle {
     items: bundle.items.map((item) => {
       const copy = { ...item };
       delete copy.imageUrl;
+      delete copy.content;
       return copy;
     }),
   };

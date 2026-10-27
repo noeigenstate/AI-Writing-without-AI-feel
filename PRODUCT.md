@@ -26,6 +26,7 @@ The current application is a local-first React/Vite web app commonly launched on
 
 - Preserve Rewrite Word, Generate Article, and Write Novel modes, their independent in-progress state, bilingual UI, editing, scoring, and export behavior. Source preview and citations apply only to Generate Article.
 - Chinese WeChat article generation may run the pinned `lieflat-less-ai-tone` whitelist cleanup after the draft is valid. It must preserve article structure, evidence, citations, protected tokens, and the accepted length band; failure remains non-blocking.
+- Factual article generation must use the bounded evidence pipeline: two to ten gap-driven research rounds, an objective fact ledger that excludes comment-only claims, a source-bound clue graph, and final fact/citation/topic/tone gates with no more than three repair cycles. At round ten, a non-empty verified fact ledger proceeds in limited-evidence mode with narrowed conclusions and disclosed material gaps; only an empty fact ledger or a persistently failing draft stops with an explicit error.
 - The interface must remain usable during 30–90 second model operations and when individual research providers fail.
 - The frontend stack is React 18, TypeScript, Zustand, and Vite with no component-library dependency.
 - The application must remain responsive and must not rely on remote decorative assets to render its core interface.

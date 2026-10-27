@@ -1331,7 +1331,9 @@ export function parseExaSearchResults(
       const url = normalizePublicSourceUrl(asString(result.url));
       if (!title || !url) return undefined;
 
-      const excerpt = cleanText(asStringArray(result.highlights).join(" ") || asString(result.text), 280);
+      const highlightText = cleanText(asStringArray(result.highlights).join(" "), 4_000);
+      const fullText = cleanText(asString(result.text), 8_000);
+      const excerpt = cleanText(highlightText || fullText, 600);
       const summary = cleanText(asString(result.summary), 700) || excerpt;
       const imageUrl = cleanText(asString(result.image), 500);
       const sourceName = inferPublisherName(url);
@@ -1344,6 +1346,7 @@ export function parseExaSearchResults(
         title,
         summary,
         excerpt: excerpt || undefined,
+        content: fullText || highlightText || undefined,
         url,
         imageUrl: /^https?:\/\//i.test(imageUrl) ? imageUrl : undefined,
         publishedAt: normalizeDate(asString(result.publishedDate) || asString(result.publishedAt)),
@@ -1496,10 +1499,15 @@ async function fetchDirectExaSearch(
   return cached(`exa-direct:${sourceKind}:${query}:${limit}`, 20 * 60 * 1000, async () => {
     const body: Record<string, unknown> = {
       query,
-      type: "fast",
+      type: sourceKind === "article" ? "auto" : "fast",
       numResults: limit,
       moderation: true,
-      contents: { highlights: true },
+      contents: sourceKind === "article"
+        ? {
+            highlights: { query, maxCharacters: 4_000 },
+            text: { maxCharacters: 8_000 },
+          }
+        : { highlights: { query, maxCharacters: 2_000 } },
     };
     if (sourceKind === "comment") body.includeDomains = DISCUSSION_DOMAINS;
 
