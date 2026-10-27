@@ -7,6 +7,7 @@ import {
   fetchTextWithOutboundPolicy,
   normalizePublicSourceUrl,
 } from "./networkSafety.js";
+import { asString, isRecord, normalizeDate, tryParseJson } from "./parse.js";
 import {
   inferPublisherName,
   inferPublisherRegion,
@@ -339,10 +340,10 @@ export function parseGoogleNewsResolverRpcResponse(value: string): string | unde
   for (const line of lines) {
     const candidate = line.trim();
     if (!candidate.startsWith("[")) continue;
-    const parsed = parseJson(candidate);
+    const parsed = tryParseJson(candidate);
     const embedded = googleNewsResolverEmbeddedPayload(parsed);
     if (!embedded) continue;
-    const decoded = parseJson(embedded);
+    const decoded = tryParseJson(embedded);
     if (!Array.isArray(decoded) || decoded[0] !== "garturlres") continue;
     const normalized = normalizeGoogleNewsPublisherUrl(asString(decoded[1]));
     if (normalized) return normalized;
@@ -1201,7 +1202,7 @@ export async function fetchGoogleNewsArticles(
 
 /** Parse Hacker News story search results as links to relevant web articles. */
 export function parseHackerNewsArticles(payload: string | unknown, query: string): ResearchItem[] {
-  const parsed = typeof payload === "string" ? parseJson(payload) : payload;
+  const parsed = typeof payload === "string" ? tryParseJson(payload) : payload;
   if (!isRecord(parsed) || !Array.isArray(parsed.hits)) return [];
 
   return parsed.hits
@@ -1260,7 +1261,7 @@ export function fetchBuiltInWebArticles(query: string, limit = 8): Promise<Resea
 
 /** Parse public Hacker News comment search output into short attributed excerpts. */
 export function parseHackerNewsComments(payload: string | unknown, query: string): ResearchItem[] {
-  const parsed = typeof payload === "string" ? parseJson(payload) : payload;
+  const parsed = typeof payload === "string" ? tryParseJson(payload) : payload;
   if (!isRecord(parsed) || !Array.isArray(parsed.hits)) return [];
 
   return parsed.hits
@@ -1320,7 +1321,7 @@ export function parseExaSearchResults(
   query: string,
   sourceKind: Extract<ResearchSourceKind, "article" | "comment">
 ): ResearchItem[] {
-  const parsed = typeof payload === "string" ? parseJson(payload) : payload;
+  const parsed = typeof payload === "string" ? tryParseJson(payload) : payload;
   if (!isRecord(parsed) || !Array.isArray(parsed.results)) return [];
 
   return parsed.results
@@ -1646,12 +1647,6 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function normalizeDate(value: string): string {
-  if (!value) return "";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
-}
-
 function normalizeAuthors(value: unknown): string[] {
   const values = Array.isArray(value) ? value : [value];
   return values.map(asString).map((author) => cleanText(author, 120)).filter(Boolean);
@@ -1659,22 +1654,6 @@ function normalizeAuthors(value: unknown): string[] {
 
 function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map(asString).filter(Boolean) : [];
-}
-
-function parseJson(value: string): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return undefined;
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function asString(value: unknown): string {
-  return typeof value === "string" ? value : "";
 }
 
 function cleanText(value: string, maxLength: number): string {

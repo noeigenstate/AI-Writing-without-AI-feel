@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { cached } from "./cache.js";
 import { inferPublisherName, inferPublisherRegion } from "./rss.js";
 import { normalizePublicSourceUrl } from "./networkSafety.js";
+import { asString, isRecord, normalizeDate, tryParseJson } from "./parse.js";
 import type { ResearchItem, ResearchSourceKind } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -39,7 +40,7 @@ export function parseAgentReachSearchOutput(
   query: string,
   sourceKind: Extract<ResearchSourceKind, "article" | "comment"> = "article"
 ): ResearchItem[] {
-  const parsed = parseUnknownJson(output);
+  const parsed = tryParseJson(output);
   const results = findResultArray(parsed);
   if (!results) return parseTextResults(agentReachTextPayload(parsed) || output, query, sourceKind);
 
@@ -58,7 +59,7 @@ export function fetchAgentReachSearch(
   if (!cleanQuery) {
     return Promise.resolve([]);
   }
-  const safeLimit = Math.max(1, Math.min(20, Math.trunc(Number.isFinite(limit) ? limit : 6)));
+  const safeLimit = clampResultLimit(limit);
 
   return cached(`agent-reach:${sourceKind}:${cleanQuery}:${safeLimit}`, 20 * 60 * 1000, async () => {
     const invocation = buildMcporterInvocation(cleanQuery, safeLimit);
@@ -86,7 +87,7 @@ export function buildMcporterInvocation(
   if (!cleanQuery) {
     return undefined;
   }
-  const safeLimit = Math.max(1, Math.min(20, Math.trunc(Number.isFinite(limit) ? limit : 6)));
+  const safeLimit = clampResultLimit(limit);
   const expression = `exa.web_search_exa(query: ${JSON.stringify(cleanQuery)}, numResults: ${safeLimit})`;
   const resolvedRuntime = runtime ?? (platform === "win32" ? resolveWindowsMcporterRuntime() : { executable: "mcporter" });
   if (!resolvedRuntime) return undefined;
@@ -101,6 +102,10 @@ export function buildMcporterInvocation(
     ],
     options: mcporterExecOptions(platform),
   };
+}
+
+function clampResultLimit(limit: number): number {
+  return Math.max(1, Math.min(20, Math.trunc(Number.isFinite(limit) ? limit : 6)));
 }
 
 export function mcporterExecOptions(_platform: NodeJS.Platform = process.platform): ExecFileOptionsWithStringEncoding {
@@ -230,7 +235,7 @@ function findResultArray(value: unknown): unknown[] | undefined {
       if (!text) {
         continue;
       }
-      const nested = findResultArray(parseUnknownJson(text));
+      const nested = findResultArray(tryParseJson(text));
       if (nested) {
         return nested;
       }
@@ -238,22 +243,6 @@ function findResultArray(value: unknown): unknown[] | undefined {
   }
 
   return undefined;
-}
-
-function parseUnknownJson(value: string): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return undefined;
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function asString(value: unknown): string {
-  return typeof value === "string" ? value : "";
 }
 
 function cleanText(value: string, maxLength: number): string {
@@ -266,15 +255,6 @@ function cleanText(value: string, maxLength: number): string {
     .trim();
 
   return text.length <= maxLength ? text : `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
-}
-
-function normalizeDate(value: string): string {
-  if (!value) {
-    return "";
-  }
-
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
 }
 
 function normalizeAuthors(value: unknown): string[] {

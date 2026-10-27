@@ -7,6 +7,7 @@ import {
   fetchBinaryWithOutboundPolicy,
   fetchTextWithOutboundPolicy,
 } from "./networkSafety.js";
+import { asString, isRecord } from "./parse.js";
 import type { ResearchItem } from "./types.js";
 
 const SOURCE_PAGE_MAX_BYTES = 700_000;
@@ -1560,7 +1561,7 @@ function collectJsonLdImageCandidates(html: string): SourceImageCandidateHint[] 
         }
         continue;
       }
-      if (!isJsonRecord(entry.value)) continue;
+      if (!isRecord(entry.value)) continue;
 
       const typeNames = jsonLdTypeNames(entry.value["@type"]);
       const isArticle = typeNames.some((typeName) => isJsonLdArticleType(typeName));
@@ -1602,7 +1603,7 @@ function collectJsonLdImageValue(
       queue.push(...current.slice(0, SOURCE_IMAGE_MAX_CANDIDATES));
       continue;
     }
-    if (!isJsonRecord(current)) continue;
+    if (!isRecord(current)) continue;
     collectJsonLdImageObject(current, candidates, context);
     for (const nested of [current.image, current.thumbnail]) {
       if (nested !== undefined) queue.push(nested);
@@ -1619,9 +1620,9 @@ function collectJsonLdImageObject(
   const height = parseImageDimension(record.height);
   const descriptiveContext = [
     context,
-    stringValue(record.name),
-    stringValue(record.caption),
-    stringValue(record.description),
+    asString(record.name),
+    asString(record.caption),
+    asString(record.description),
   ].filter(Boolean).join(" ");
   for (const key of ["contentUrl", "url", "thumbnailUrl"] as const) {
     const value = record[key];
@@ -1884,7 +1885,7 @@ function parseImageDimension(value: unknown): number | undefined {
     const number = Number(match[1]);
     return number >= 0 && number <= 100_000 ? number : undefined;
   }
-  if (isJsonRecord(value)) return parseImageDimension(value.value);
+  if (isRecord(value)) return parseImageDimension(value.value);
   return undefined;
 }
 
@@ -1922,14 +1923,6 @@ function jsonLdTypeNames(value: unknown): string[] {
 
 function isJsonLdArticleType(typeName: string): boolean {
   return typeName === "blogposting" || typeName === "report" || typeName.endsWith("article");
-}
-
-function isJsonRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function stringValue(value: unknown): string {
-  return typeof value === "string" ? value : "";
 }
 
 function safeDecodeUrlPart(value: string): string {
