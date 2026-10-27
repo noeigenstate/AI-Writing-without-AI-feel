@@ -66,14 +66,10 @@ export function enabledNewsSources(): NewsSource[] {
 export function newsSourcesForDomain(domainName: string, perRegion = 4): NewsSource[] {
   const preferredTypes = sourceTypesForDomain(domainName.trim().toLowerCase());
   const enabled = enabledNewsSources();
-  const domestic = rankedForTypes(enabled.filter((item) => item.region === "domestic"), preferredTypes)
-    .slice(0, perRegion);
-  const international = rankedForTypes(
-    enabled.filter((item) => item.region === "international"),
-    preferredTypes
-  ).slice(0, perRegion);
+  const forRegion = (region: ResearchRegion) =>
+    rankedForTypes(enabled.filter((item) => item.region === region), preferredTypes).slice(0, perRegion);
 
-  return interleave(domestic, international);
+  return interleave(forRegion("domestic"), forRegion("international"));
 }
 
 function rankedForTypes(sources: NewsSource[], preferredTypes: NewsSourceType[]): NewsSource[] {

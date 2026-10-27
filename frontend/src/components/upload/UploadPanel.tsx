@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useStore } from "../../lib/store.js";
 import { CloudUp, SamplesIcon, WordIcon } from "../common/icons.js";
+import { OptionSelect } from "../common/OptionControls.js";
 import { messages } from "../../lib/i18n.js";
+import { sceneOptions } from "../../lib/sceneOptions.js";
 import type { WritingSceneId } from "../../lib/api.js";
 
 /** "Rewrite Word" entry view: pick a docx + style/samples, then upload & parse. */
@@ -21,6 +23,7 @@ export default function UploadPanel() {
   }, [loadStyles]);
 
   const picked = styles.find((s) => s.id === styleId);
+  const scenes = sceneOptions(t).map((scene) => ({ ...scene, label: `${t.sceneLabel}: ${scene.label}` }));
 
   return (
     <div className="upload">
@@ -29,24 +32,15 @@ export default function UploadPanel() {
           <span className="badge peach">1</span>
           <h2>{t.uploadTitle}</h2>
         </div>
-        <label className="filepill">
-          <span className="ftype word">
-            <WordIcon />
-          </span>
-          <span className="fpick">{t.chooseFile}</span>
-          <span className="fsep" />
-          <span className={`fname${target ? " has" : ""}`}>
-            {target ? target.name : t.noFileChosen}
-          </span>
-          <span className="fcloud">
-            <CloudUp />
-          </span>
-          <input
-            type="file"
-            accept=".docx"
-            onChange={(e) => setTarget(e.target.files?.[0] ?? null)}
-          />
-        </label>
+        <FilePill
+          kind="word"
+          icon={<WordIcon />}
+          pickLabel={t.chooseFile}
+          fileLabel={target ? target.name : t.noFileChosen}
+          hasFile={Boolean(target)}
+          accept=".docx"
+          onFiles={(files) => setTarget(files?.[0] ?? null)}
+        />
       </section>
 
       <section className="step upload-style">
@@ -59,56 +53,31 @@ export default function UploadPanel() {
         <label className="sr-only" htmlFor="rewrite-style-select">
           {t.chooseStyleTitle}
         </label>
-        <select
+        <OptionSelect
           id="rewrite-style-select"
           className="styleselect"
           value={styleId}
-          onChange={(e) => setStyleId(e.target.value)}
-        >
-          <option value="">{t.styleNone}</option>
-          {styles.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-            </option>
-          ))}
-        </select>
+          options={styles.map((s) => ({ id: s.id, label: s.name }))}
+          emptyLabel={t.styleNone}
+          onChange={setStyleId}
+        />
         {picked && <p className="hint pick-desc">{picked.desc}</p>}
 
         <label className="sr-only" htmlFor="rewrite-scene-select">
           {t.sceneLabel}
         </label>
-        <select
-          id="rewrite-scene-select"
-          className="styleselect"
-          value={sceneId}
-          onChange={(e) => setSceneId(e.target.value as WritingSceneId)}
-        >
-          {sceneOptions(t).map((scene) => (
-            <option key={scene.id} value={scene.id}>
-              {scene.label}
-            </option>
-          ))}
-        </select>
+        <OptionSelect id="rewrite-scene-select" className="styleselect" value={sceneId} options={scenes} onChange={setSceneId} />
 
-        <label className="filepill">
-          <span className="ftype txt">
-            <SamplesIcon />
-          </span>
-          <span className="fpick">{t.uploadSamples}</span>
-          <span className="fsep" />
-          <span className={`fname${refs.length ? " has" : ""}`}>
-            {refs.length ? t.selectedSamples(refs.length) : t.noSamples}
-          </span>
-          <span className="fcloud">
-            <CloudUp />
-          </span>
-          <input
-            type="file"
-            accept=".docx,.txt"
-            multiple
-            onChange={(e) => setRefs(Array.from(e.target.files ?? []))}
-          />
-        </label>
+        <FilePill
+          kind="txt"
+          icon={<SamplesIcon />}
+          pickLabel={t.uploadSamples}
+          fileLabel={refs.length ? t.selectedSamples(refs.length) : t.noSamples}
+          hasFile={refs.length > 0}
+          accept=".docx,.txt"
+          multiple
+          onFiles={(files) => setRefs(Array.from(files ?? []))}
+        />
       </section>
 
       <div className="row-end">
@@ -125,14 +94,29 @@ export default function UploadPanel() {
   );
 }
 
-function sceneOptions(t: (typeof messages)["en"]): { id: WritingSceneId; label: string }[] {
-  return [
-    { id: "general", label: `${t.sceneLabel}: ${t.sceneGeneral}` },
-    { id: "wechat", label: `${t.sceneLabel}: ${t.sceneWechat}` },
-    { id: "business", label: `${t.sceneLabel}: ${t.sceneBusiness}` },
-    { id: "academic", label: `${t.sceneLabel}: ${t.sceneAcademic}` },
-    { id: "official", label: `${t.sceneLabel}: ${t.sceneOfficial}` },
-    { id: "social", label: `${t.sceneLabel}: ${t.sceneSocial}` },
-    { id: "technical", label: `${t.sceneLabel}: ${t.sceneTechnical}` },
-  ];
+interface FilePillProps {
+  kind: "word" | "txt";
+  icon: ReactNode;
+  pickLabel: string;
+  fileLabel: string;
+  hasFile: boolean;
+  accept: string;
+  multiple?: boolean;
+  onFiles: (files: FileList | null) => void;
+}
+
+/** A file input styled as a pill: type icon, pick label, chosen file name and upload glyph. */
+function FilePill({ kind, icon, pickLabel, fileLabel, hasFile, accept, multiple, onFiles }: FilePillProps) {
+  return (
+    <label className="filepill">
+      <span className={`ftype ${kind}`}>{icon}</span>
+      <span className="fpick">{pickLabel}</span>
+      <span className="fsep" />
+      <span className={`fname${hasFile ? " has" : ""}`}>{fileLabel}</span>
+      <span className="fcloud">
+        <CloudUp />
+      </span>
+      <input type="file" accept={accept} multiple={multiple} onChange={(e) => onFiles(e.target.files)} />
+    </label>
+  );
 }

@@ -1,5 +1,6 @@
-import { chat, type ChatOptions } from "./llm.js";
+import { chat, type ChatFn, type ChatOptions } from "./llm.js";
 import { parseJson, parseJsonWithRepair } from "../lib/json.js";
+import { isOneOf, stringField } from "../lib/text.js";
 import {
   articleLengthDistance,
   getArticleLengthSpec,
@@ -46,7 +47,6 @@ export interface GeneratedNovel {
   length: ArticleLengthMetadata;
 }
 
-type ChatFn = (prompt: string, options?: ChatOptions) => Promise<string>;
 type NovelBody = Pick<GeneratedNovel, "title" | "paragraphs">;
 
 const MAX_LENGTH_FIX_PASSES = 2;
@@ -97,15 +97,24 @@ export class NovelLengthTargetError extends Error {
 }
 
 export function isNovelGenre(value: unknown): value is NovelGenre {
-  return typeof value === "string" && NOVEL_GENRES.some((genre) => genre === value);
+  return isOneOf(NOVEL_GENRES, value);
 }
 
 export function isNovelViewpoint(value: unknown): value is NovelViewpoint {
-  return typeof value === "string" && NOVEL_VIEWPOINTS.some((viewpoint) => viewpoint === value);
+  return isOneOf(NOVEL_VIEWPOINTS, value);
 }
 
 export function isNovelTone(value: unknown): value is NovelTone {
-  return typeof value === "string" && NOVEL_TONES.some((tone) => tone === value);
+  return isOneOf(NOVEL_TONES, value);
+}
+
+/** Localized genre / viewpoint / tone labels shared by the prompt and the stored style summary. */
+function novelLabels(input: GenerateNovelInput, lang: Lang): Pick<NovelPromptInput, "genre" | "viewpoint" | "tone"> {
+  return {
+    genre: GENRE_LABELS[input.genre][lang],
+    viewpoint: VIEWPOINT_LABELS[input.viewpoint][lang],
+    tone: TONE_LABELS[input.tone][lang],
+  };
 }
 
 /** Generate and length-check an editable fiction draft. */
@@ -118,9 +127,7 @@ export async function generateNovelDraft(
   const promptInput: NovelPromptInput = {
     title: input.title?.trim() ?? "",
     premise: input.premise.trim(),
-    genre: GENRE_LABELS[input.genre][lang],
-    viewpoint: VIEWPOINT_LABELS[input.viewpoint][lang],
-    tone: TONE_LABELS[input.tone][lang],
+    ...novelLabels(input, lang),
     targetLength: input.targetLength,
     length: spec,
   };
@@ -154,9 +161,10 @@ export async function generateNovelDraft(
 /** Style context reused by sentence rewriting after the fiction draft is stored. */
 export function novelStyleSummary(input: GenerateNovelInput): string {
   const lang = input.lang ?? "en";
+  const { genre, viewpoint, tone } = novelLabels(input, lang);
   const details = lang === "zh"
-    ? `题材：${GENRE_LABELS[input.genre][lang]}；视角：${VIEWPOINT_LABELS[input.viewpoint][lang]}；基调：${TONE_LABELS[input.tone][lang]}。`
-    : `Genre: ${GENRE_LABELS[input.genre][lang]}; viewpoint: ${VIEWPOINT_LABELS[input.viewpoint][lang]}; tone: ${TONE_LABELS[input.tone][lang]}.`;
+    ? `题材：${genre}；视角：${viewpoint}；基调：${tone}。`
+    : `Genre: ${genre}; viewpoint: ${viewpoint}; tone: ${tone}.`;
   const guard = lang === "zh"
     ? "小说润色：保持人物身份、叙事视角、时态、既有情节事实和人物声音一致；改善句子时不得新增关键情节。"
     : "Fiction revision: preserve character identity, viewpoint, tense, established story facts, and character voice; sentence polishing must not invent new plot events.";
@@ -208,8 +216,7 @@ async function requestOptionalNovelJson(
 function normalizeNovel(value: unknown, fixedTitle: string): NovelBody | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  const modelTitle = typeof record.title === "string" ? record.title.trim() : "";
-  const title = fixedTitle || modelTitle;
+  const title = fixedTitle || stringField(record.title);
   if (!title || title.length > 120 || !Array.isArray(record.paragraphs)) return null;
 
   const paragraphs = record.paragraphs

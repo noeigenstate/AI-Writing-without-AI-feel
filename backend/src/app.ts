@@ -75,6 +75,7 @@ export function sanitizeApiResponseBody(body: unknown, statusCode: number, lang:
 /** Strip raw exception text from research-source status arrays at any JSON nesting level. */
 function sanitizeProviderDiagnostics(value: Record<string, unknown>, lang: "en" | "zh"): Record<string, unknown> {
   const output: Record<string, unknown> = {};
+  const sanitizeNested = (item: unknown) => (isPlainObject(item) ? sanitizeProviderDiagnostics(item, lang) : item);
   for (const [key, child] of Object.entries(value)) {
     if (key === "unavailableSources" && Array.isArray(child)) {
       const suffix = lang === "zh" ? "暂时不可用" : "temporarily unavailable";
@@ -85,19 +86,13 @@ function sanitizeProviderDiagnostics(value: Record<string, unknown>, lang: "en" 
       });
       continue;
     }
-    if (Array.isArray(child)) {
-      output[key] = child.map((item) =>
-        item && typeof item === "object" && Object.getPrototypeOf(item) === Object.prototype
-          ? sanitizeProviderDiagnostics(item as Record<string, unknown>, lang)
-          : item
-      );
-    } else if (child && typeof child === "object" && Object.getPrototypeOf(child) === Object.prototype) {
-      output[key] = sanitizeProviderDiagnostics(child as Record<string, unknown>, lang);
-    } else {
-      output[key] = child;
-    }
+    output[key] = Array.isArray(child) ? child.map(sanitizeNested) : sanitizeNested(child);
   }
   return output;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype;
 }
 
 function sanitizeJsonResponses(req: Request, res: Response, next: NextFunction): void {

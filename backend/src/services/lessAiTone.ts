@@ -1,9 +1,8 @@
-import { chat, type ChatOptions } from "./llm.js";
+import { chat, type ChatFn } from "./llm.js";
 import { parseJson } from "../lib/json.js";
 import { lessAiToneCleanupPrompt } from "../prompts/lessAiTone.prompts.js";
 import type { GeneratedArticle, ArticleSectionBreak } from "./article.js";
 
-type AskFn = (prompt: string, options?: ChatOptions) => Promise<string>;
 type LessAiToneRuleId = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
 
 interface LessAiToneChange {
@@ -36,60 +35,18 @@ const CHINESE_ORDINALS: Record<string, number> = {
 export async function applyLieflatLessAiTone(
   article: GeneratedArticle,
   styleSummary = "",
-  ask: AskFn = chat
+  ask: ChatFn = chat
 ): Promise<GeneratedArticle> {
   const withHeadings = cleanSequentialHeadingNumbers(article, styleSummary);
-  if (!withHeadings.paragraphs.some((text, index, paragraphs) => paragraphHasAnyTrigger(text, index, paragraphs))) {
-    return withHeadings;
-  }
+  if (!withHeadings.paragraphs.some(paragraphHasAnyTrigger)) return withHeadings;
 
-  let parsed: unknown;
-  try {
-    const raw = await ask(lessAiToneCleanupPrompt(withHeadings, styleSummary), {
-      temperature: 0.1,
-      disableThinking: true,
-    });
-    if (!raw.trim()) return withHeadings;
-    parsed = parseJson<unknown>(raw);
-  } catch {
-    return withHeadings;
-  }
-
-  const changes = normalizeChanges(parsed);
-  if (changes.length === 0) return withHeadings;
+  const changes = await requestChanges(withHeadings, styleSummary, ask);
   const paragraphs = [...withHeadings.paragraphs];
   const changedIndices = new Set<number>();
   for (const change of changes) {
-    const original = paragraphs[change.paragraphIndex];
-    if (original === undefined || changedIndices.has(change.paragraphIndex)) continue;
-    if (!change.ruleIds.every((ruleId) => paragraphTriggersRule(
-      ruleId,
-      original,
-      change.paragraphIndex,
-      withHeadings.paragraphs
-    ))) continue;
-    const rewritten = change.text.trim();
-    if (
-      !rewritten
-      || rewritten === original
-      || !preservesProtectedContent(original, rewritten)
-      || !preservesUnmatchedSentences(
-        original,
-        rewritten,
-        change.ruleIds,
-        change.paragraphIndex,
-        withHeadings.paragraphs
-      )
-      || !isMinimalRewrite(original, rewritten)
-    ) continue;
-    const candidateParagraphs = [...paragraphs];
-    candidateParagraphs[change.paragraphIndex] = rewritten;
-    if (change.ruleIds.some((ruleId) => paragraphTriggersRule(
-      ruleId,
-      rewritten,
-      change.paragraphIndex,
-      candidateParagraphs
-    ))) continue;
+    if (changedIndices.has(change.paragraphIndex)) continue;
+    const rewritten = acceptedRewrite(change, paragraphs, withHeadings.paragraphs);
+    if (rewritten === undefined) continue;
     paragraphs[change.paragraphIndex] = rewritten;
     changedIndices.add(change.paragraphIndex);
   }
@@ -100,7 +57,55 @@ export async function applyLieflatLessAiTone(
 /** Cheap preflight used to avoid a model call when no whitelist trigger exists. */
 export function articleNeedsLieflatLessAiTone(article: GeneratedArticle, styleSummary = ""): boolean {
   if (cleanSequentialHeadingNumbers(article, styleSummary) !== article) return true;
-  return article.paragraphs.some((text, index, paragraphs) => paragraphHasAnyTrigger(text, index, paragraphs));
+  return article.paragraphs.some(paragraphHasAnyTrigger);
+}
+
+/** Ask the model for whitelist fixes; an empty reply, provider error or bad JSON means no changes. */
+async function requestChanges(
+  article: GeneratedArticle,
+  styleSummary: string,
+  ask: ChatFn
+): Promise<LessAiToneChange[]> {
+  let parsed: unknown;
+  try {
+    const raw = await ask(lessAiToneCleanupPrompt(article, styleSummary), {
+      temperature: 0.1,
+      disableThinking: true,
+    });
+    if (!raw.trim()) return [];
+    parsed = parseJson<unknown>(raw);
+  } catch {
+    return [];
+  }
+  return normalizeChanges(parsed);
+}
+
+/**
+ * The trimmed rewrite when every claimed rule fires on the original paragraph, the
+ * rewrite keeps protected content and untouched sentences, stays minimal, and no
+ * longer fires any claimed rule; otherwise undefined.
+ */
+function acceptedRewrite(
+  change: LessAiToneChange,
+  current: readonly string[],
+  source: readonly string[]
+): string | undefined {
+  const { paragraphIndex, ruleIds } = change;
+  const original = current[paragraphIndex];
+  if (original === undefined) return undefined;
+  if (!ruleIds.every((ruleId) => paragraphTriggersRule(ruleId, original, paragraphIndex, source))) return undefined;
+  const rewritten = change.text.trim();
+  if (
+    !rewritten
+    || rewritten === original
+    || !preservesProtectedContent(original, rewritten)
+    || !preservesUnmatchedSentences(original, rewritten, ruleIds, paragraphIndex, source)
+    || !isMinimalRewrite(original, rewritten)
+  ) return undefined;
+  const candidateParagraphs = [...current];
+  candidateParagraphs[paragraphIndex] = rewritten;
+  const stillTriggers = ruleIds.some((ruleId) => paragraphTriggersRule(ruleId, rewritten, paragraphIndex, candidateParagraphs));
+  return stillTriggers ? undefined : rewritten;
 }
 
 function normalizeChanges(value: unknown): LessAiToneChange[] {

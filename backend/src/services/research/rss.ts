@@ -1,3 +1,4 @@
+import { containsHan } from "../../lib/text.js";
 import { cached } from "./cache.js";
 import { fetchTextWithTimeout } from "./http.js";
 import { normalizePublicSourceUrl } from "./networkSafety.js";
@@ -154,7 +155,7 @@ function domainMatches(hostname: string, domain: string): boolean {
 /** Match only a known publisher name or a small set of ordinary outlet suffixes. */
 function publisherNameMatches(name: string, publisher: string): boolean {
   if (name === publisher) return true;
-  const suffixes = /[\u3400-\u9fff]/u.test(publisher)
+  const suffixes = containsHan(publisher)
     ? ["网", "新闻", "客户端", "中文网"]
     : [" news", " online", " international"];
   return suffixes.some((suffix) => name === `${publisher}${suffix}`);

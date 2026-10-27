@@ -15,6 +15,7 @@ import {
   type GenerateNovelInput,
 } from "../services/novel.js";
 import { titleIndexOf } from "../services/rewrite.js";
+import { stringField } from "../lib/text.js";
 
 const router = Router();
 
@@ -33,8 +34,8 @@ router.post("/api/novel/generate", async (req, res) => {
       lang?: unknown;
     };
     const lang = normalizeLang(body.lang);
-    const premise = typeof body.premise === "string" ? body.premise.trim() : "";
-    const title = typeof body.title === "string" ? body.title.trim() : "";
+    const premise = stringField(body.premise);
+    const title = stringField(body.title);
     const genre = body.genre ?? "literary";
     const viewpoint = body.viewpoint ?? "third-limited";
     const tone = body.tone ?? "restrained";

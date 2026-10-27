@@ -30,27 +30,13 @@ export default function RewritePopover({
 }: Props) {
   const lang = useStore((s) => s.lang);
   const t = messages[lang];
-  const [loading, setLoading] = useState(true);
-  const [alts, setAlts] = useState<string[]>([]);
+  const { loading, alts, err } = useCandidates(loadCandidates);
   const [edit, setEdit] = useState(original);
-  const [err, setErr] = useState<string | null>(null);
   const [progressStartedAt] = useState(() => Date.now());
   const headingId = useId();
   const originalId = useId();
   const manualEditId = useId();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    let alive = true;
-    loadCandidates()
-      .then((a) => alive && setAlts(a))
-      .catch((e) => alive && setErr(e.message))
-      .finally(() => alive && setLoading(false));
-    return () => {
-      alive = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   useEffect(() => {
     closeButtonRef.current?.focus();
@@ -67,26 +53,8 @@ export default function RewritePopover({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  function keepFocusInside(event: React.KeyboardEvent<HTMLDivElement>) {
-    if (event.key !== "Tab") return;
-    const focusable = Array.from(
-      event.currentTarget.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
-      )
-    );
-    if (focusable.length === 0) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
-
   const style = floatingStyle(anchor);
+  const showCandidates = !loading && !err;
 
   return (
     <div className="popover-layer">
@@ -120,16 +88,13 @@ export default function RewritePopover({
               <div className="hint">{t.loadingCandidates}</div>
             ))}
           {err && <div className="error" role="alert">{err}</div>}
-          {!loading &&
-            !err &&
+          {showCandidates &&
             alts.map((a, i) => (
               <button key={i} type="button" className="alt" onClick={() => onAdopt(a)}>
                 {a}
               </button>
             ))}
-          {!loading && !err && alts.length === 0 && (
-            <div className="hint">{t.noCandidates}</div>
-          )}
+          {showCandidates && alts.length === 0 && <div className="hint">{t.noCandidates}</div>}
         </div>
 
         <div className="edit-area">
@@ -144,6 +109,47 @@ export default function RewritePopover({
       </div>
     </div>
   );
+}
+
+/** Load the candidate list once; a new popover is mounted for every selection. */
+function useCandidates(loadCandidates: () => Promise<string[]>) {
+  const [loading, setLoading] = useState(true);
+  const [alts, setAlts] = useState<string[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    loadCandidates()
+      .then((a) => alive && setAlts(a))
+      .catch((e) => alive && setErr(e.message))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return { loading, alts, err };
+}
+
+/** Wrap Tab / Shift+Tab focus around the dialog's focusable controls. */
+function keepFocusInside(event: React.KeyboardEvent<HTMLDivElement>) {
+  if (event.key !== "Tab") return;
+  const focusable = Array.from(
+    event.currentTarget.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+    )
+  );
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 function floatingStyle(anchor: FloatingAnchor | undefined): CSSProperties {

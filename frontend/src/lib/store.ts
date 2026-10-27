@@ -129,12 +129,55 @@ function workspaceFromState(s: State): WorkspaceState {
   };
 }
 
+/** The active workspace lives in the top-level fields; inactive ones live in `workspaces`. */
+function workspaceOf(s: State, mode: Mode): WorkspaceState {
+  return s.mode === mode ? workspaceFromState(s) : s.workspaces[mode];
+}
+
 function workspacePatch(s: State, mode: Mode, patch: Partial<WorkspaceState>) {
-  const base = s.mode === mode ? workspaceFromState(s) : s.workspaces[mode];
-  const nextWorkspace = { ...base, ...patch };
+  const nextWorkspace = { ...workspaceOf(s, mode), ...patch };
   const workspaces = { ...s.workspaces, [mode]: nextWorkspace };
   return s.mode === mode ? { ...patch, workspaces } : { workspaces };
 }
+
+interface LoadedDocument {
+  docId: string;
+  styleSummary: string;
+  titleIndex: number;
+  paragraphs: ParagraphDTO[];
+}
+
+/** A freshly loaded document replaces the editor content and clears scores, diagnosis and busy state. */
+function loadedDocumentPatch(
+  doc: LoadedDocument,
+  extras: { renderBlocks?: ArticleRenderBlockDTO[]; length?: ArticleLengthDTO; research?: ResearchBundleDTO } = {}
+): Partial<WorkspaceState> {
+  return {
+    docId: doc.docId,
+    styleSummary: doc.styleSummary,
+    paragraphs: doc.paragraphs,
+    renderBlocks: extras.renderBlocks ?? null,
+    length: extras.length ?? null,
+    titleIndex: doc.titleIndex,
+    research: extras.research ?? null,
+    aiScore: null,
+    currentScore: null,
+    diagnosis: null,
+    step: "ready",
+    busy: null,
+    progress: null,
+  };
+}
+
+function failurePatch(e: unknown): Partial<WorkspaceState> {
+  return { error: (e as Error).message, busy: null, progress: null };
+}
+
+function documentText(paragraphs: ParagraphDTO[]): string {
+  return paragraphs.map((p) => p.sentences.join("")).join("\n");
+}
+
+const rewriteWorkspace = emptyWorkspace();
 
 /**
  * The single Zustand store backing the whole UI.
@@ -142,271 +185,203 @@ function workspacePatch(s: State, mode: Mode, patch: Partial<WorkspaceState>) {
  * Holds the current document/editor state and exposes async actions that call
  * the API client and update state (upload, generate, rewrite, score, export).
  */
-const rewriteWorkspace = emptyWorkspace();
-const generateWorkspace = emptyWorkspace();
-const novelWorkspace = emptyWorkspace();
-
-export const useStore = create<State>((set, get) => ({
-  lang: getStoredLang(),
-  ...rewriteWorkspace,
-  mode: "rewrite",
-  styles: [],
-  articleDomains: [],
-  workspaces: {
-    rewrite: rewriteWorkspace,
-    generate: generateWorkspace,
-    novel: novelWorkspace,
-  },
-
-  async recomputeScore(mode = get().mode) {
-    const state = get();
-    const workspace = state.mode === mode ? workspaceFromState(state) : state.workspaces[mode];
-    const { paragraphs, aiScore } = workspace;
-    const { lang } = state;
-    const text = paragraphs.map((p) => p.sentences.join("")).join("\n");
-    if (!text.trim()) return set((s) => workspacePatch(s, mode, { aiScore: null, currentScore: null }));
+export const useStore = create<State>((set, get) => {
+  /** Shared flow for actions that load a new document into `mode`'s workspace and then score it. */
+  async function loadDocument<T>(
+    mode: Mode,
+    pending: Partial<WorkspaceState>,
+    request: () => Promise<T>,
+    loaded: (response: T) => Partial<WorkspaceState>
+  ): Promise<void> {
+    set((s) => workspacePatch(s, mode, pending));
     try {
-      const nextScore = await scoreText(text, lang);
-      set((s) => workspacePatch(s, mode, {
-        aiScore: aiScore ? { before: aiScore.before, after: nextScore } : null,
-        currentScore: nextScore,
-      }));
-    } catch {
-      /* 评分失败不阻塞 */
-    }
-  },
-
-  async diagnoseCurrent() {
-    const mode = get().mode;
-    const { paragraphs, lang } = get();
-    const text = paragraphs.map((p) => p.sentences.join("")).join("\n");
-    if (!text.trim()) return set((s) => workspacePatch(s, mode, { diagnosis: null }));
-    set((s) => workspacePatch(s, mode, { error: null }));
-    try {
-      const diagnosis = await diagnoseText(text, lang);
-      set((s) => workspacePatch(s, mode, { diagnosis, currentScore: diagnosis }));
-    } catch (e) {
-      set((s) => workspacePatch(s, mode, { error: (e as Error).message }));
-    }
-  },
-
-  setLang(lang) {
-    storeLang(lang);
-    set({ lang });
-    // 语言切换后重新拉取本地化的风格/领域列表
-    void get().loadStyles();
-    void get().loadArticleDomains();
-  },
-
-  setMode(mode) {
-    set((s) => {
-      if (s.mode === mode) return {};
-      const currentWorkspace = workspaceFromState(s);
-      const workspaces = { ...s.workspaces, [s.mode]: currentWorkspace };
-      return {
-        ...workspaces[mode],
-        mode,
-        workspaces,
-      };
-    });
-  },
-
-  setResearch(research, mode = get().mode) {
-    set((s) => workspacePatch(s, mode, { research }));
-  },
-
-  async loadStyles() {
-    set({ styles: await fetchStyles(get().lang) });
-  },
-
-  async loadArticleDomains() {
-    set({ articleDomains: await fetchArticleDomains(get().lang) });
-  },
-
-  async doUpload(target, refs, styleId, sceneId) {
-    const mode = get().mode;
-    set((s) => workspacePatch(s, mode, { busy: messages[get().lang].busyParsing, error: null }));
-    try {
-      const r = await uploadFiles(target, refs, styleId, sceneId, get().lang);
-      set((s) => workspacePatch(s, mode, {
-        docId: r.docId,
-        styleSummary: r.styleSummary,
-        paragraphs: r.paragraphs,
-        renderBlocks: null,
-        length: null,
-        titleIndex: r.titleIndex,
-        research: null,
-        aiScore: null,
-        currentScore: null,
-        diagnosis: null,
-        step: "ready",
-        busy: null,
-        progress: null,
-      }));
+      const response = await request();
+      set((s) => workspacePatch(s, mode, loaded(response)));
       void get().recomputeScore(mode);
     } catch (e) {
-      set((s) => workspacePatch(s, mode, { error: (e as Error).message, busy: null, progress: null }));
+      set((s) => workspacePatch(s, mode, failurePatch(e)));
     }
-  },
+  }
 
-  async doGenerateArticle(domainId, customDomain, topic, styleId, sceneId, targetLength) {
-    const mode = get().mode;
-    set((s) => workspacePatch(s, mode, { busy: messages[get().lang].busyGenerating, progress: startProgress("article"), error: null }));
-    try {
-      const r = await generateArticle(domainId, customDomain, topic, styleId, sceneId, targetLength, get().lang);
-      set((s) => workspacePatch(s, mode, {
-        docId: r.docId,
-        styleSummary: r.styleSummary,
-        paragraphs: r.paragraphs,
-        renderBlocks: r.renderBlocks ?? null,
-        length: r.length ?? null,
-        titleIndex: r.titleIndex,
-        research: r.research ?? null,
-        aiScore: null,
-        currentScore: null,
-        diagnosis: null,
-        step: "ready",
-        busy: null,
-        progress: null,
-      }));
-      void get().recomputeScore(mode);
-    } catch (e) {
-      set((s) => workspacePatch(s, mode, { error: (e as Error).message, busy: null, progress: null }));
-    }
-  },
+  return {
+    lang: getStoredLang(),
+    ...rewriteWorkspace,
+    mode: "rewrite",
+    styles: [],
+    articleDomains: [],
+    workspaces: {
+      rewrite: rewriteWorkspace,
+      generate: emptyWorkspace(),
+      novel: emptyWorkspace(),
+    },
 
-  async doGenerateArticleFromTitle(title, styleId, sceneId, targetLength) {
-    const mode = get().mode;
-    set((s) => workspacePatch(s, mode, { busy: messages[get().lang].busyMatching, progress: startProgress("articleFromTitle"), error: null }));
-    try {
-      const r = await generateArticleFromTitle(title, styleId, sceneId, targetLength, get().lang);
-      set((s) => workspacePatch(s, mode, {
-        docId: r.docId,
-        styleSummary: r.styleSummary,
-        paragraphs: r.paragraphs,
-        renderBlocks: r.renderBlocks ?? null,
-        length: r.length ?? null,
-        titleIndex: r.titleIndex,
-        research: r.research ?? null,
-        aiScore: null,
-        currentScore: null,
-        diagnosis: null,
-        step: "ready",
-        busy: null,
-        progress: null,
-      }));
-      void get().recomputeScore(mode);
-    } catch (e) {
-      set((s) => workspacePatch(s, mode, { error: (e as Error).message, busy: null, progress: null }));
-    }
-  },
-
-  async doGenerateNovel(input) {
-    const mode: Mode = "novel";
-    set((s) => workspacePatch(s, mode, {
-      busy: messages[get().lang].busyNovel,
-      progress: startProgress("novel"),
-      error: null,
-    }));
-    try {
-      const r = await generateNovel(input, get().lang);
-      set((s) => workspacePatch(s, mode, {
-        docId: r.docId,
-        styleSummary: r.styleSummary,
-        paragraphs: r.paragraphs,
-        renderBlocks: r.renderBlocks ?? null,
-        length: r.length ?? null,
-        titleIndex: r.titleIndex,
-        research: null,
-        aiScore: null,
-        currentScore: null,
-        diagnosis: null,
-        step: "ready",
-        busy: null,
-        progress: null,
-      }));
-      void get().recomputeScore(mode);
-    } catch (e) {
-      set((s) => workspacePatch(s, mode, {
-        error: (e as Error).message,
-        busy: null,
-        progress: null,
-      }));
-    }
-  },
-
-  async doRewrite() {
-    const mode = get().mode;
-    const { docId } = get();
-    if (!docId) return;
-    set((s) => workspacePatch(s, mode, { busy: messages[get().lang].busyRewriting, progress: startProgress("rewrite"), error: null }));
-    try {
-      const r = await rewriteDoc(docId, get().lang);
-      set((s) => workspacePatch(s, mode, {
-        paragraphs: r.paragraphs,
-        renderBlocks: s.mode === mode ? s.renderBlocks : s.workspaces[mode].renderBlocks,
-        aiScore: r.score ?? null,
-        currentScore: r.score?.after ?? (s.mode === mode ? s.currentScore : s.workspaces[mode].currentScore),
-        diagnosis: null,
-        busy: null,
-        progress: null,
-      }));
-    } catch (e) {
-      set((s) => workspacePatch(s, mode, { error: (e as Error).message, busy: null, progress: null }));
-    }
-  },
-
-  setSentence(paraIndex, sentenceIdx, text) {
-    const mode = get().mode;
-    set((s) => workspacePatch(s, mode, {
-      paragraphs: s.paragraphs.map((p) =>
-        p.index === paraIndex
-          ? { ...p, sentences: p.sentences.map((x, i) => (i === sentenceIdx ? text : x)) }
-          : p
-      ),
-      diagnosis: null,
-    }));
-  },
-
-  setParagraph(paraIndex, text) {
-    const mode = get().mode;
-    set((s) => workspacePatch(s, mode, {
-      paragraphs: s.paragraphs.map((p) =>
-        p.index === paraIndex ? { ...p, sentences: [text] } : p
-      ),
-      diagnosis: null,
-    }));
-  },
-
-  async doExport() {
-    const mode = get().mode;
-    const { docId, paragraphs, lang } = get();
-    if (!docId) return;
-    set((s) => workspacePatch(s, mode, { busy: messages[get().lang].busyExporting, error: null }));
-    try {
-      // 只发回真正改动过的段落；未改动的段落不传，导出时原样保留（含段内字符级格式）
-      const texts: Record<number, string> = {};
-      for (const p of paragraphs) {
-        const current = p.sentences.join("");
-        if (current !== p.original) texts[p.index] = current;
+    async recomputeScore(mode = get().mode) {
+      const state = get();
+      const { paragraphs, aiScore } = workspaceOf(state, mode);
+      const text = documentText(paragraphs);
+      if (!text.trim()) return set((s) => workspacePatch(s, mode, { aiScore: null, currentScore: null }));
+      try {
+        const nextScore = await scoreText(text, state.lang);
+        set((s) => workspacePatch(s, mode, {
+          aiScore: aiScore ? { before: aiScore.before, after: nextScore } : null,
+          currentScore: nextScore,
+        }));
+      } catch {
+        /* 评分失败不阻塞 */
       }
-      await exportDoc(docId, texts, lang, mode === "novel" ? "novel.docx" : "rewritten.docx");
-      set((s) => workspacePatch(s, mode, { busy: null }));
-    } catch (e) {
-      set((s) => workspacePatch(s, mode, { error: (e as Error).message, busy: null }));
-    }
-  },
+    },
 
-  reset() {
-    set((s) => {
-      const nextWorkspace = emptyWorkspace();
-      return {
-        ...nextWorkspace,
-        workspaces: { ...s.workspaces, [s.mode]: nextWorkspace },
-      };
-    });
-  },
-}));
+    async diagnoseCurrent() {
+      const { mode, paragraphs, lang } = get();
+      const text = documentText(paragraphs);
+      if (!text.trim()) return set((s) => workspacePatch(s, mode, { diagnosis: null }));
+      set((s) => workspacePatch(s, mode, { error: null }));
+      try {
+        const diagnosis = await diagnoseText(text, lang);
+        set((s) => workspacePatch(s, mode, { diagnosis, currentScore: diagnosis }));
+      } catch (e) {
+        set((s) => workspacePatch(s, mode, { error: (e as Error).message }));
+      }
+    },
+
+    setLang(lang) {
+      storeLang(lang);
+      set({ lang });
+      // 语言切换后重新拉取本地化的风格/领域列表
+      void get().loadStyles();
+      void get().loadArticleDomains();
+    },
+
+    setMode(mode) {
+      set((s) => {
+        if (s.mode === mode) return {};
+        const workspaces = { ...s.workspaces, [s.mode]: workspaceFromState(s) };
+        return {
+          ...workspaces[mode],
+          mode,
+          workspaces,
+        };
+      });
+    },
+
+    setResearch(research, mode = get().mode) {
+      set((s) => workspacePatch(s, mode, { research }));
+    },
+
+    async loadStyles() {
+      set({ styles: await fetchStyles(get().lang) });
+    },
+
+    async loadArticleDomains() {
+      set({ articleDomains: await fetchArticleDomains(get().lang) });
+    },
+
+    doUpload(target, refs, styleId, sceneId) {
+      return loadDocument(
+        get().mode,
+        { busy: messages[get().lang].busyParsing, error: null },
+        () => uploadFiles(target, refs, styleId, sceneId, get().lang),
+        (r) => loadedDocumentPatch(r)
+      );
+    },
+
+    doGenerateArticle(domainId, customDomain, topic, styleId, sceneId, targetLength) {
+      return loadDocument(
+        get().mode,
+        { busy: messages[get().lang].busyGenerating, progress: startProgress("article"), error: null },
+        () => generateArticle(domainId, customDomain, topic, styleId, sceneId, targetLength, get().lang),
+        (r) => loadedDocumentPatch(r, { renderBlocks: r.renderBlocks, length: r.length, research: r.research })
+      );
+    },
+
+    doGenerateArticleFromTitle(title, styleId, sceneId, targetLength) {
+      return loadDocument(
+        get().mode,
+        { busy: messages[get().lang].busyMatching, progress: startProgress("articleFromTitle"), error: null },
+        () => generateArticleFromTitle(title, styleId, sceneId, targetLength, get().lang),
+        (r) => loadedDocumentPatch(r, { renderBlocks: r.renderBlocks, length: r.length, research: r.research })
+      );
+    },
+
+    doGenerateNovel(input) {
+      return loadDocument(
+        "novel",
+        { busy: messages[get().lang].busyNovel, progress: startProgress("novel"), error: null },
+        () => generateNovel(input, get().lang),
+        (r) => loadedDocumentPatch(r, { renderBlocks: r.renderBlocks, length: r.length })
+      );
+    },
+
+    async doRewrite() {
+      const { mode, docId } = get();
+      if (!docId) return;
+      set((s) => workspacePatch(s, mode, { busy: messages[get().lang].busyRewriting, progress: startProgress("rewrite"), error: null }));
+      try {
+        const r = await rewriteDoc(docId, get().lang);
+        set((s) => workspacePatch(s, mode, {
+          paragraphs: r.paragraphs,
+          aiScore: r.score ?? null,
+          currentScore: r.score?.after ?? workspaceOf(s, mode).currentScore,
+          diagnosis: null,
+          busy: null,
+          progress: null,
+        }));
+      } catch (e) {
+        set((s) => workspacePatch(s, mode, failurePatch(e)));
+      }
+    },
+
+    setSentence(paraIndex, sentenceIdx, text) {
+      const mode = get().mode;
+      set((s) => workspacePatch(s, mode, {
+        paragraphs: s.paragraphs.map((p) =>
+          p.index === paraIndex
+            ? { ...p, sentences: p.sentences.map((x, i) => (i === sentenceIdx ? text : x)) }
+            : p
+        ),
+        diagnosis: null,
+      }));
+    },
+
+    setParagraph(paraIndex, text) {
+      const mode = get().mode;
+      set((s) => workspacePatch(s, mode, {
+        paragraphs: s.paragraphs.map((p) =>
+          p.index === paraIndex ? { ...p, sentences: [text] } : p
+        ),
+        diagnosis: null,
+      }));
+    },
+
+    async doExport() {
+      const { mode, docId, paragraphs, lang } = get();
+      if (!docId) return;
+      set((s) => workspacePatch(s, mode, { busy: messages[get().lang].busyExporting, error: null }));
+      try {
+        // 只发回真正改动过的段落；未改动的段落不传，导出时原样保留（含段内字符级格式）
+        const texts: Record<number, string> = {};
+        for (const p of paragraphs) {
+          const current = p.sentences.join("");
+          if (current !== p.original) texts[p.index] = current;
+        }
+        await exportDoc(docId, texts, lang, mode === "novel" ? "novel.docx" : "rewritten.docx");
+        set((s) => workspacePatch(s, mode, { busy: null }));
+      } catch (e) {
+        set((s) => workspacePatch(s, mode, { error: (e as Error).message, busy: null }));
+      }
+    },
+
+    reset() {
+      set((s) => {
+        const nextWorkspace = emptyWorkspace();
+        return {
+          ...nextWorkspace,
+          workspaces: { ...s.workspaces, [s.mode]: nextWorkspace },
+        };
+      });
+    },
+  };
+});
 
 function startProgress(task: ProgressTask): { task: ProgressTask; startedAt: number } {
   return { task, startedAt: Date.now() };

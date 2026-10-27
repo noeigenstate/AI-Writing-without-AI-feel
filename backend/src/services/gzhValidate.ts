@@ -53,11 +53,18 @@ interface StackEntry {
   isCode: boolean;
 }
 
+/** `<span leaf>` 包裹扫描结果（对应 Python 版 LeafChecker）。 */
+interface LeafScan {
+  leafCount: number;
+  unwrapped: { snippet: string; parent: string }[];
+  halfPunct: string[];
+}
+
 function decodeEntities(text: string): string {
   return text
     .replace(/&quot;/g, '"')
     .replace(/&#0?39;|&apos;/g, "'")
-    .replace(/&nbsp;/g, " ")
+    .replace(/&nbsp;/g, "\u00a0")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&amp;/g, "&");
@@ -78,61 +85,7 @@ export function validateGzhHtml(html: string): GzhValidation {
     if (hits) errors.push(`${msg}（命中 ${hits} 处）`);
   }
 
-  // —— <span leaf> 包裹检查（对应 Python 版 LeafChecker）——
-  const stack: StackEntry[] = [];
-  let leafDepth = 0;
-  let codeDepth = 0;
-  let leafCount = 0;
-  const unwrapped: { snippet: string; parent: string }[] = [];
-  const halfPunct: string[] = [];
-
-  const handleText = (raw: string) => {
-    const text = decodeEntities(raw).trim();
-    if (!text || !CJK.test(text)) return;
-    if (stack.some((s) => SKIP_TAGS.has(s.tag))) return;
-    const snippet = text.length > 24 ? `${text.slice(0, 24)}…` : text;
-    if (leafDepth === 0) {
-      unwrapped.push({ snippet, parent: stack.length ? stack[stack.length - 1].tag : "(root)" });
-    }
-    if (codeDepth === 0 && (HALF_PUNCT.test(text) || ASCII_QUOTE.test(text))) {
-      halfPunct.push(snippet);
-    }
-  };
-
-  let last = 0;
-  for (const m of html.matchAll(TOKEN_RE)) {
-    if (m.index > last) handleText(html.slice(last, m.index));
-    last = m.index + m[0].length;
-    const token = m[0];
-    if (token.startsWith("<!--")) continue;
-
-    if (token.startsWith("</")) {
-      const tag = token.slice(2).match(/^[a-zA-Z][\w-]*/)?.[0]?.toLowerCase() ?? "";
-      for (let i = stack.length - 1; i >= 0; i--) {
-        if (stack[i].tag === tag) {
-          for (const popped of stack.splice(i)) {
-            if (popped.isLeaf) leafDepth -= 1;
-            if (popped.isCode) codeDepth -= 1;
-          }
-          break;
-        }
-      }
-      continue;
-    }
-
-    const tag = token.slice(1).match(/^[a-zA-Z][\w-]*/)?.[0]?.toLowerCase() ?? "";
-    const isLeaf = tag === "span" && /\sleaf(?:\s*=|[\s/>])/i.test(token);
-    const style = token.match(/\sstyle\s*=\s*("([^"]*)"|'([^']*)')/i);
-    const isCode = CODE_STYLE.test(style?.[2] ?? style?.[3] ?? "");
-    if (isLeaf) leafCount += 1;
-    const selfClosing = VOID_TAGS.has(tag) || /\/>$/.test(token);
-    if (selfClosing) continue;
-    if (isLeaf) leafDepth += 1;
-    if (isCode) codeDepth += 1;
-    stack.push({ tag, isLeaf, isCode });
-  }
-  if (last < html.length) handleText(html.slice(last));
-
+  const { leafCount, unwrapped, halfPunct } = scanLeafWrapping(html);
   if (CJK.test(html) && leafCount === 0) {
     errors.push('全文没有任何 <span leaf=""> 包裹——粘贴到公众号后样式会大面积丢失');
   } else if (unwrapped.length) {
@@ -151,4 +104,50 @@ export function validateGzhHtml(html: string): GzhValidation {
   }
 
   return { errors, warnings, leafCount };
+}
+
+/** 按标签栈逐 token 扫描：统计 `<span leaf>`，收集未包裹的中文与代码区外的半角标点。 */
+function scanLeafWrapping(html: string): LeafScan {
+  const scan: LeafScan = { leafCount: 0, unwrapped: [], halfPunct: [] };
+  const stack: StackEntry[] = [];
+  let last = 0;
+  for (const m of html.matchAll(TOKEN_RE)) {
+    if (m.index > last) recordText(html.slice(last, m.index), stack, scan);
+    last = m.index + m[0].length;
+    const token = m[0];
+    if (token.startsWith("<!--")) continue;
+    if (token.startsWith("</")) {
+      // 关闭最近的同名标签，并丢弃其内未闭合的子标签
+      const open = stack.map((s) => s.tag).lastIndexOf(tagName(token.slice(2)));
+      if (open >= 0) stack.splice(open);
+      continue;
+    }
+
+    const tag = tagName(token.slice(1));
+    const isLeaf = tag === "span" && /\sleaf(?:\s*=|[\s/>])/i.test(token);
+    const style = token.match(/\sstyle\s*=\s*("([^"]*)"|'([^']*)')/i);
+    const isCode = CODE_STYLE.test(style?.[2] ?? style?.[3] ?? "");
+    if (isLeaf) scan.leafCount += 1;
+    if (VOID_TAGS.has(tag) || /\/>$/.test(token)) continue;
+    stack.push({ tag, isLeaf, isCode });
+  }
+  if (last < html.length) recordText(html.slice(last), stack, scan);
+  return scan;
+}
+
+function tagName(rest: string): string {
+  return rest.match(/^[a-zA-Z][\w-]*/)?.[0]?.toLowerCase() ?? "";
+}
+
+function recordText(raw: string, stack: readonly StackEntry[], scan: LeafScan): void {
+  const text = decodeEntities(raw).trim();
+  if (!text || !CJK.test(text)) return;
+  if (stack.some((s) => SKIP_TAGS.has(s.tag))) return;
+  const snippet = text.length > 24 ? `${text.slice(0, 24)}…` : text;
+  if (!stack.some((s) => s.isLeaf)) {
+    scan.unwrapped.push({ snippet, parent: stack.at(-1)?.tag ?? "(root)" });
+  }
+  if (!stack.some((s) => s.isCode) && (HALF_PUNCT.test(text) || ASCII_QUOTE.test(text))) {
+    scan.halfPunct.push(snippet);
+  }
 }

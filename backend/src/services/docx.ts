@@ -40,7 +40,9 @@ export interface ParsedDoc {
 
 const PSTYLE_RE = /<w:pStyle\b[^>]*w:val="([^"]*)"/;
 const WT_RE = /<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g;
-type FigureMime = Extract<DocxBlock, { type: "figure" }>["mimeType"];
+type FigureBlock = Extract<DocxBlock, { type: "figure" }>;
+type TableBlock = Extract<DocxBlock, { type: "table" }>;
+type FigureMime = FigureBlock["mimeType"];
 
 interface PreparedFigure {
   bytes: Buffer;
@@ -63,7 +65,7 @@ function invalidFigureMedia(): never {
 }
 
 /** Decode one canonical base64 data URI and reject MIME/header spoofing. */
-async function prepareFigure(figure: Extract<DocxBlock, { type: "figure" }>): Promise<PreparedFigure> {
+async function prepareFigure(figure: FigureBlock): Promise<PreparedFigure> {
   const match = /^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/]+={0,2})$/u.exec(
     figure.mediaDataUri
   );
@@ -79,13 +81,7 @@ async function prepareFigure(figure: Extract<DocxBlock, { type: "figure" }>): Pr
   const decoded = await validateDecodableRasterImage(bytes, figure.mimeType);
   if (!decoded || decoded.width !== figure.width || decoded.height !== figure.height) invalidFigureMedia();
 
-  const { cx, cy } = figureExtent(figure.width, figure.height);
-  return {
-    bytes,
-    extension: FIGURE_EXTENSIONS[figure.mimeType],
-    cx,
-    cy,
-  };
+  return { bytes, extension: FIGURE_EXTENSIONS[figure.mimeType], ...figureExtent(figure.width, figure.height) };
 }
 
 function hasExpectedImageSignature(bytes: Buffer, mimeType: FigureMime): boolean {
@@ -177,24 +173,11 @@ function paragraphText(block: string): string {
  * @throws Error if `word/document.xml` is missing (not a valid docx).
  */
 export async function parseDocx(buf: Buffer): Promise<ParsedDoc> {
-  const zip = await JSZip.loadAsync(buf);
-  const file = zip.file("word/document.xml");
-  if (!file) throw new Error("不是有效的 docx：缺少 word/document.xml");
-  const xml = await file.async("string");
-
-  const paragraphs: ParsedParagraph[] = [];
-  let index = 0;
-  for (const { text: block } of paragraphSpans(xml)) {
-    const styleMatch = block.match(PSTYLE_RE);
-    const style = styleMatch ? styleMatch[1] : "";
-    paragraphs.push({
-      index,
-      style,
-      kind: styleToKind(style),
-      text: paragraphText(block),
-    });
-    index++;
-  }
+  const { xml } = await loadDocumentXml(buf);
+  const paragraphs = paragraphSpans(xml).map(({ text: block }, index): ParsedParagraph => {
+    const style = block.match(PSTYLE_RE)?.[1] ?? "";
+    return { index, style, kind: styleToKind(style), text: paragraphText(block) };
+  });
   return { paragraphs };
 }
 
@@ -213,23 +196,23 @@ export async function exportDocx(
   buf: Buffer,
   newTexts: (string | undefined)[]
 ): Promise<Buffer> {
-  const zip = await JSZip.loadAsync(buf);
-  const file = zip.file("word/document.xml");
-  if (!file) throw new Error("不是有效的 docx：缺少 word/document.xml");
-  let xml = await file.async("string");
-
-  let index = 0;
-  xml = replaceParagraphSpans(xml, (block) => {
+  const { zip, xml } = await loadDocumentXml(buf);
+  const updated = replaceParagraphSpans(xml, (block, index) => {
     const newText = newTexts[index];
-    index++;
-    if (newText === undefined) return block;
-    return replaceParagraphText(block, newText);
+    return newText === undefined ? block : replaceParagraphText(block, newText);
   });
-
-  zip.file("word/document.xml", xml);
+  zip.file("word/document.xml", updated);
   return zip.generateAsync({ type: "nodebuffer" });
 }
 
+async function loadDocumentXml(buf: Buffer): Promise<{ zip: JSZip; xml: string }> {
+  const zip = await JSZip.loadAsync(buf);
+  const file = zip.file("word/document.xml");
+  if (!file) throw new Error("不是有效的 docx：缺少 word/document.xml");
+  return { zip, xml: await file.async("string") };
+}
+
+/** Top-level `<w:p>` blocks in document order; paragraphs nested in text boxes stay inside their parent. */
 function paragraphSpans(xml: string): XmlSpan[] {
   const spans: XmlSpan[] = [];
   const re = /<w:p\b[^>]*\/>|<w:p\b[^>]*>|<\/w:p>/g;
@@ -239,43 +222,35 @@ function paragraphSpans(xml: string): XmlSpan[] {
   for (const match of xml.matchAll(re)) {
     const token = match[0];
     const index = match.index ?? 0;
-    if (token.startsWith("<w:p")) {
-      if (depth === 0) {
-        start = index;
-      }
-      if (token.endsWith("/>")) {
-        if (depth === 0) {
-          spans.push({ start: index, end: index + token.length, text: token });
-          start = -1;
-        }
-      } else {
-        depth += 1;
-      }
-      continue;
-    }
-
-    if (depth > 0) {
+    if (token === "</w:p>") {
+      if (depth === 0) continue;
       depth -= 1;
       if (depth === 0 && start >= 0) {
         const end = index + token.length;
         spans.push({ start, end, text: xml.slice(start, end) });
         start = -1;
       }
+      continue;
+    }
+
+    if (!token.endsWith("/>")) {
+      if (depth === 0) start = index;
+      depth += 1;
+    } else if (depth === 0) {
+      spans.push({ start: index, end: index + token.length, text: token });
     }
   }
 
   return spans;
 }
 
-function replaceParagraphSpans(xml: string, replacer: (block: string) => string): string {
-  const spans = paragraphSpans(xml);
+function replaceParagraphSpans(xml: string, replacer: (block: string, index: number) => string): string {
   let out = "";
   let cursor = 0;
-  for (const span of spans) {
-    out += xml.slice(cursor, span.start);
-    out += replacer(span.text);
+  paragraphSpans(xml).forEach((span, index) => {
+    out += xml.slice(cursor, span.start) + replacer(span.text, index);
     cursor = span.end;
-  }
+  });
   return out + xml.slice(cursor);
 }
 
@@ -302,7 +277,7 @@ export async function createDocxFromBlocks(blocks: DocxBlock[]): Promise<Buffer>
   zip.file("[Content_Types].xml", contentTypesXml());
   zip.folder("_rels")?.file(".rels", packageRelsXml());
   const word = zip.folder("word");
-  const figureBlocks = blocks.filter((block): block is Extract<DocxBlock, { type: "figure" }> => block.type === "figure");
+  const figureBlocks = blocks.filter((block): block is FigureBlock => block.type === "figure");
   // Decode sequentially so a document with several large figures cannot make
   // every image decoder allocate its full pixel buffer at the same time.
   const preparedFigures: PreparedFigure[] = [];
@@ -311,10 +286,7 @@ export async function createDocxFromBlocks(blocks: DocxBlock[]): Promise<Buffer>
   word?.file("styles.xml", stylesXml());
   word?.folder("_rels")?.file("document.xml.rels", documentRelsXml(preparedFigures));
   const media = word?.folder("media");
-  preparedFigures.forEach((figure, index) => {
-    const id = index + 1;
-    media?.file(`figure${id}.${figure.extension}`, figure.bytes);
-  });
+  preparedFigures.forEach((figure, index) => media?.file(`figure${index + 1}.${figure.extension}`, figure.bytes));
   return zip.generateAsync({ type: "nodebuffer" });
 }
 
@@ -360,7 +332,7 @@ function paragraphXml(kind: ParaKind, text: string): string {
 }
 
 /** Render a table block (optional title + bordered table + optional note) as XML. */
-function tableBlockXml(table: Extract<DocxBlock, { type: "table" }>): string {
+function tableBlockXml(table: TableBlock): string {
   const header = tableRowXml(table.columns, true);
   const rows = table.rows.map((row) => tableRowXml(row, false)).join("");
   const note = table.note ? paragraphXml("normal", table.note) : "";
@@ -396,11 +368,7 @@ function tableRowXml(cells: string[], isHeader: boolean): string {
 }
 
 /** Render a figure block (original source image + caption) as XML. */
-function figureBlockXml(
-  figure: Extract<DocxBlock, { type: "figure" }>,
-  index: number,
-  prepared: PreparedFigure
-): string {
+function figureBlockXml(figure: FigureBlock, index: number, prepared: PreparedFigure): string {
   const rid = `rIdFigure${index}`;
   const { cx, cy, extension } = prepared;
   return `<w:p><w:r><w:drawing>
@@ -514,25 +482,16 @@ function stylesXml(): string {
  * @returns The rewritten paragraph XML.
  */
 function replaceParagraphText(block: string, newText: string): string {
-  const wtMatches = [...block.matchAll(WT_RE)];
-  if (wtMatches.length === 0) return block; // 空段落不动
-
+  // 没有 <w:t> 的空段落不会被匹配，原样返回
   const encoded = encodeXml(newText);
   let seen = 0;
-  return block.replace(WT_RE, (full, _inner, offset) => {
+  return block.replace(WT_RE, (full) => {
     seen++;
-    if (seen === 1) {
-      // 首个 <w:t> 写入全部文本，并保证 xml:space="preserve"
-      const openEnd = full.indexOf(">");
-      let openTag = full.slice(0, openEnd + 1);
-      if (!/xml:space=/.test(openTag)) {
-        openTag = openTag.replace(/>$/, ' xml:space="preserve">');
-      }
-      return `${openTag}${encoded}</w:t>`;
-    }
+    const openTag = full.slice(0, full.indexOf(">") + 1);
     // 其余 <w:t> 清空（保留标签结构）
-    const openEnd = full.indexOf(">");
-    const openTag = full.slice(0, openEnd + 1);
-    return `${openTag}</w:t>`;
+    if (seen > 1) return `${openTag}</w:t>`;
+    // 首个 <w:t> 写入全部文本，并保证 xml:space="preserve"
+    const preserved = /xml:space=/.test(openTag) ? openTag : openTag.replace(/>$/, ' xml:space="preserve">');
+    return `${preserved}${encoded}</w:t>`;
   });
 }

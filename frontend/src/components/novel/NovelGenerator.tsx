@@ -6,9 +6,10 @@ import {
   type NovelViewpoint,
   type TargetLength,
 } from "../../lib/api.js";
-import { messages } from "../../lib/i18n.js";
+import { messages, type Dict } from "../../lib/i18n.js";
 import { useStore } from "../../lib/store.js";
 import { BookIcon } from "../common/icons.js";
+import { OptionSelect, SegmentedControl, type Option } from "../common/OptionControls.js";
 
 /** Fiction entry view: story brief + narrative controls, then the shared editor. */
 export default function NovelGenerator() {
@@ -23,32 +24,7 @@ export default function NovelGenerator() {
   const [tone, setTone] = useState<NovelTone>("restrained");
   const [targetLength, setTargetLength] = useState<TargetLength>("medium");
 
-  const genreOptions: Array<{ id: NovelGenre; label: string }> = [
-    { id: "literary", label: t.novelGenreLiterary },
-    { id: "romance", label: t.novelGenreRomance },
-    { id: "suspense", label: t.novelGenreSuspense },
-    { id: "science-fiction", label: t.novelGenreScienceFiction },
-    { id: "fantasy", label: t.novelGenreFantasy },
-    { id: "historical", label: t.novelGenreHistorical },
-    { id: "realism", label: t.novelGenreRealism },
-  ];
-  const viewpointOptions: Array<{ id: NovelViewpoint; label: string }> = [
-    { id: "first-person", label: t.novelViewpointFirst },
-    { id: "third-limited", label: t.novelViewpointThirdLimited },
-    { id: "omniscient", label: t.novelViewpointOmniscient },
-  ];
-  const toneOptions: Array<{ id: NovelTone; label: string }> = [
-    { id: "restrained", label: t.novelToneRestrained },
-    { id: "warm", label: t.novelToneWarm },
-    { id: "dark", label: t.novelToneDark },
-    { id: "humorous", label: t.novelToneHumorous },
-    { id: "tense", label: t.novelToneTense },
-  ];
-  const lengthOptions: Array<{ id: TargetLength; label: string }> = [
-    { id: "short", label: t.novelLengthShort },
-    { id: "medium", label: t.novelLengthMedium },
-    { id: "long", label: t.novelLengthLong },
-  ];
+  const { genreOptions, viewpointOptions, toneOptions, lengthOptions } = novelOptions(t);
 
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -112,51 +88,23 @@ export default function NovelGenerator() {
 
         <div className="novel-options">
           <label htmlFor="novel-genre">{t.novelGenreLabel}</label>
-          <select
-            id="novel-genre"
-            className="styleselect compact"
-            value={genre}
-            onChange={(event) => setGenre(event.target.value as NovelGenre)}
-          >
-            {genreOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-          </select>
+          <OptionSelect id="novel-genre" value={genre} options={genreOptions} onChange={setGenre} />
 
           <label htmlFor="novel-viewpoint">{t.novelViewpointLabel}</label>
-          <select
-            id="novel-viewpoint"
-            className="styleselect compact"
-            value={viewpoint}
-            onChange={(event) => setViewpoint(event.target.value as NovelViewpoint)}
-          >
-            {viewpointOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-          </select>
+          <OptionSelect id="novel-viewpoint" value={viewpoint} options={viewpointOptions} onChange={setViewpoint} />
 
           <label htmlFor="novel-tone">{t.novelToneLabel}</label>
-          <select
-            id="novel-tone"
-            className="styleselect compact"
-            value={tone}
-            onChange={(event) => setTone(event.target.value as NovelTone)}
-          >
-            {toneOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-          </select>
+          <OptionSelect id="novel-tone" value={tone} options={toneOptions} onChange={setTone} />
         </div>
 
         <div className="novel-length">
           <span id="novel-length-label">{t.novelLengthLabel}</span>
-          <div className="segment" role="group" aria-labelledby="novel-length-label">
-            {lengthOptions.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                className={targetLength === option.id ? "active" : ""}
-                aria-pressed={targetLength === option.id}
-                onClick={() => setTargetLength(option.id)}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
+          <SegmentedControl
+            aria-labelledby="novel-length-label"
+            options={lengthOptions}
+            value={targetLength}
+            onChange={setTargetLength}
+          />
         </div>
 
         <button className="primary novel-submit" type="submit" disabled={Boolean(busy) || !premise.trim()}>
@@ -166,4 +114,40 @@ export default function NovelGenerator() {
       </section>
     </form>
   );
+}
+
+function novelOptions(t: Dict): {
+  genreOptions: Option<NovelGenre>[];
+  viewpointOptions: Option<NovelViewpoint>[];
+  toneOptions: Option<NovelTone>[];
+  lengthOptions: Option<TargetLength>[];
+} {
+  return {
+    genreOptions: [
+      { id: "literary", label: t.novelGenreLiterary },
+      { id: "romance", label: t.novelGenreRomance },
+      { id: "suspense", label: t.novelGenreSuspense },
+      { id: "science-fiction", label: t.novelGenreScienceFiction },
+      { id: "fantasy", label: t.novelGenreFantasy },
+      { id: "historical", label: t.novelGenreHistorical },
+      { id: "realism", label: t.novelGenreRealism },
+    ],
+    viewpointOptions: [
+      { id: "first-person", label: t.novelViewpointFirst },
+      { id: "third-limited", label: t.novelViewpointThirdLimited },
+      { id: "omniscient", label: t.novelViewpointOmniscient },
+    ],
+    toneOptions: [
+      { id: "restrained", label: t.novelToneRestrained },
+      { id: "warm", label: t.novelToneWarm },
+      { id: "dark", label: t.novelToneDark },
+      { id: "humorous", label: t.novelToneHumorous },
+      { id: "tense", label: t.novelToneTense },
+    ],
+    lengthOptions: [
+      { id: "short", label: t.novelLengthShort },
+      { id: "medium", label: t.novelLengthMedium },
+      { id: "long", label: t.novelLengthLong },
+    ],
+  };
 }

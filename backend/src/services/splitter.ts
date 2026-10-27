@@ -52,88 +52,68 @@ export function splitSentences(text: string): string[] {
 
 function splitSentencesWithQuotes(text: string, respectPairs: boolean): string[] {
   const out: string[] = [];
+  const chars = Array.from(text);
   let buf = "";
   let depth = 0; // 引号/括号嵌套深度
   let pendingQuotedBoundary = false;
+  let i = 0;
 
-  const chars = Array.from(text);
-  for (let i = 0; i < chars.length; i++) {
+  const absorbNextWhile = (accept: (next: string) => boolean) => {
+    while (i + 1 < chars.length && accept(chars[i + 1])) buf += chars[++i];
+  };
+  /** End the sentence here, keeping trailing closing quotes/brackets with it. */
+  const flushSentence = () => {
+    absorbNextWhile((next) => CLOSERS.has(next));
+    out.push(buf);
+    buf = "";
+  };
+  /** Outside quotes break now; inside quotes defer the break to the outermost closer. */
+  const markBoundary = () => {
+    if (depth === 0) flushSentence();
+    else pendingQuotedBoundary = true;
+  };
+
+  for (; i < chars.length; i++) {
     const ch = chars[i];
     buf += ch;
 
     if (respectPairs && OPENERS[ch]) {
       depth++;
-      continue;
-    }
-    if (respectPairs && CLOSERS.has(ch) && depth > 0) {
+    } else if (respectPairs && CLOSERS.has(ch) && depth > 0) {
       depth--;
       if (depth === 0 && pendingQuotedBoundary) {
-        while (i + 1 < chars.length && CLOSERS.has(chars[i + 1])) buf += chars[++i];
-        out.push(buf);
-        buf = "";
+        flushSentence();
         pendingQuotedBoundary = false;
       }
-      continue;
-    }
-
-    if (ch === "…" || isAsciiEllipsis(chars, i)) {
-      if (ch === ".") {
-        while (i + 1 < chars.length && chars[i + 1] === ".") buf += chars[++i];
-      } else {
-        while (i + 1 < chars.length && chars[i + 1] === "…") buf += chars[++i];
-      }
-      if (depth === 0) {
-        while (i + 1 < chars.length && CLOSERS.has(chars[i + 1])) buf += chars[++i];
-        out.push(buf);
-        buf = "";
-      } else {
-        pendingQuotedBoundary = true;
-      }
-      continue;
-    }
-
-    if (!isTerminator(chars, i)) {
-      continue;
-    }
-
-    if (depth === 0) {
-      while (i + 1 < chars.length && CLOSERS.has(chars[i + 1])) buf += chars[++i];
-      out.push(buf);
-      buf = "";
-    } else {
-      pendingQuotedBoundary = true;
+    } else if (ch === "…" || isAsciiEllipsis(chars, i)) {
+      // An ellipsis run ("……" or "...") counts as one boundary.
+      absorbNextWhile((next) => next === ch);
+      markBoundary();
+    } else if (isTerminator(chars, i)) {
+      markBoundary();
     }
   }
 
-  if (buf.length > 0) {
-    if (respectPairs && depth > 0 && hasBoundary(buf)) {
-      out.push(...splitSentencesWithQuotes(buf, false));
-    } else {
-      out.push(buf);
-    }
+  if (!buf) return out;
+  if (respectPairs && depth > 0 && hasBoundary(buf)) {
+    out.push(...splitSentencesWithQuotes(buf, false));
+  } else {
+    out.push(buf);
   }
   return out;
 }
 
 function isTerminator(chars: string[], index: number): boolean {
   const ch = chars[index];
-  if (!TERMINATORS.has(ch)) {
-    return false;
-  }
-  if (ch === ".") {
-    return isSentenceDot(chars, index);
-  }
-  return true;
+  return TERMINATORS.has(ch) && (ch !== "." || isSentenceDot(chars, index));
 }
 
 function isAsciiEllipsis(chars: string[], index: number): boolean {
   return chars[index] === "." && chars[index + 1] === "." && chars[index + 2] === ".";
 }
 
+/** Whether the "." at `index` ends a sentence (not an ellipsis, decimal or abbreviation). */
 function isSentenceDot(chars: string[], index: number): boolean {
-  if (chars[index] !== ".") {
-    return false;
-  }
   if (isAsciiEllipsis(chars, index)) {
     return false;
   }

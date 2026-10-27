@@ -1,4 +1,5 @@
 import type { Lang } from "../core/i18n.js";
+import { isOneOf } from "../lib/text.js";
 
 /** Supported article-length tiers accepted by the API. */
 export const ARTICLE_LENGTH_TIERS = ["short", "medium", "long"] as const;
@@ -38,7 +39,7 @@ export const ARTICLE_LENGTH_SPECS: Record<Lang, Record<ArticleLengthTier, Articl
 
 /** Return whether a request value is a supported target-length tier. */
 export function isArticleLengthTier(value: unknown): value is ArticleLengthTier {
-  return typeof value === "string" && ARTICLE_LENGTH_TIERS.some((tier) => tier === value);
+  return isOneOf(ARTICLE_LENGTH_TIERS, value);
 }
 
 /** Resolve the exact length specification for a language and tier. */

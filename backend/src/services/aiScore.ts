@@ -49,25 +49,22 @@ export interface AiDiagnosticReport extends AiScore {
   issues: DiagnosticIssue[];
 }
 
-interface PhraseGroup {
+interface SignalGroup {
   id: string;
   label: string;
   layer: SignalLayer;
   suggestion: string;
-  phrases: string[]; // 直接子串匹配（中文）或单词匹配（英文）
-  atSentenceStart?: boolean; // 仅统计句首命中
   scale: number; // 密度 → 分数的放大系数
   max: number; // 该类封顶
 }
 
-interface RegexGroup {
-  id: string;
-  label: string;
-  layer: SignalLayer;
-  suggestion: string;
+interface PhraseGroup extends SignalGroup {
+  phrases: string[]; // 直接子串匹配（中文）或单词匹配（英文）
+  atSentenceStart?: boolean; // 仅统计句首命中
+}
+
+interface RegexGroup extends SignalGroup {
   patterns: RegExp[];
-  scale: number;
-  max: number;
 }
 
 const ZH_PHRASES: PhraseGroup[] = [
@@ -295,16 +292,7 @@ interface ScoringSentence {
   start: number;
 }
 
-/**
- * Split text into rough sentences for both languages (heuristic, scoring only).
- *
- * @param text The text to split.
- * @returns Non-empty, trimmed sentence-ish pieces.
- */
-function splitForScoring(text: string): string[] {
-  return sentenceRangesForScoring(text).map((s) => s.text);
-}
-
+/** Split text into rough, trimmed sentences with their offsets (heuristic, scoring only). */
 function sentenceRangesForScoring(text: string): ScoringSentence[] {
   const ranges: ScoringSentence[] = [];
   const re = /[。.!?！？;；\n]+/g;
@@ -334,18 +322,20 @@ function phraseRanges(text: string, phrases: string[]): TextRange[] {
   const haystack = text.toLowerCase();
   const ranges: TextRange[] = [];
   for (const phrase of sortedUniquePhrases(phrases)) {
-    let offset = 0;
-    while (offset < haystack.length) {
-      const start = haystack.indexOf(phrase, offset);
-      if (start < 0) break;
-      const range = { start, end: start + phrase.length };
-      if (!ranges.some((r) => rangesOverlap(r, range))) {
-        ranges.push(range);
-      }
-      offset = start + phrase.length;
+    for (const range of occurrenceRanges(haystack, phrase)) {
+      if (!ranges.some((r) => rangesOverlap(r, range))) ranges.push(range);
     }
   }
   return ranges.sort((a, b) => a.start - b.start);
+}
+
+/** Non-overlapping occurrences of a non-empty `needle`, left to right. */
+function occurrenceRanges(haystack: string, needle: string): TextRange[] {
+  const ranges: TextRange[] = [];
+  for (let start = haystack.indexOf(needle); start >= 0; start = haystack.indexOf(needle, start + needle.length)) {
+    ranges.push({ start, end: start + needle.length });
+  }
+  return ranges;
 }
 
 function sentenceStartPhraseRanges(text: string, phrases: string[]): TextRange[] {
@@ -395,18 +385,7 @@ function phraseGroupScore(group: PhraseGroup, text: string, units: number, claim
     claimedRanges.push(range);
     accepted.push(range);
   }
-  const hits = accepted.length;
-  const density = hits / units;
-  const points = Math.min(group.max, density * group.scale);
-  return {
-    id: group.id,
-    label: group.label,
-    layer: group.layer,
-    suggestion: group.suggestion,
-    examples: examplesForRanges(text, accepted),
-    hits,
-    points,
-  };
+  return groupSignal(group, text, units, accepted);
 }
 
 /**
@@ -418,15 +397,18 @@ function phraseGroupScore(group: PhraseGroup, text: string, units: number, claim
  * @returns The group's hits and capped point contribution.
  */
 function regexGroupScore(group: RegexGroup, text: string, units: number): ScoreSignal {
-  let hits = 0;
-  const ranges: TextRange[] = [];
-  for (const re of group.patterns) {
-    for (const match of text.matchAll(re)) {
-      hits += 1;
+  const ranges = group.patterns.flatMap((re) =>
+    Array.from(text.matchAll(re), (match): TextRange => {
       const start = match.index ?? 0;
-      ranges.push({ start, end: start + match[0].length });
-    }
-  }
+      return { start, end: start + match[0].length };
+    })
+  );
+  return groupSignal(group, text, units, ranges);
+}
+
+/** A group's signal: hits are its matched ranges, points are length-normalized and capped. */
+function groupSignal(group: SignalGroup, text: string, units: number, ranges: TextRange[]): ScoreSignal {
+  const hits = ranges.length;
   const density = hits / units;
   const points = Math.min(group.max, density * group.scale);
   return {
@@ -440,54 +422,27 @@ function regexGroupScore(group: RegexGroup, text: string, units: number): ScoreS
   };
 }
 
+const REPETITION_STOPWORDS = new Set([
+  "the", "and", "for", "with", "that", "this", "from", "have", "has", "will",
+  "一个", "我们", "他们", "这些", "那些", "可以", "因为", "但是",
+]);
+
 function repetitionSignal(text: string, lang: Lang, units: number): ScoreSignal {
-  const stop = new Set([
-    "the",
-    "and",
-    "for",
-    "with",
-    "that",
-    "this",
-    "from",
-    "have",
-    "has",
-    "will",
-    "一个",
-    "我们",
-    "他们",
-    "这些",
-    "那些",
-    "可以",
-    "因为",
-    "但是",
-  ]);
   const tokens =
     lang === "zh"
       ? Array.from(text.matchAll(/[\u4e00-\u9fff]{2,4}/g), (m) => m[0])
       : (text.toLowerCase().match(/[a-z][a-z-]{3,}/g) ?? []);
   const counts = new Map<string, number>();
-  const rangesByToken = new Map<string, TextRange[]>();
   for (const token of tokens) {
-    if (stop.has(token)) continue;
+    if (REPETITION_STOPWORDS.has(token)) continue;
     counts.set(token, (counts.get(token) ?? 0) + 1);
-  }
-  for (const token of counts.keys()) {
-    const ranges: TextRange[] = [];
-    let offset = 0;
-    while (offset < text.length) {
-      const start = text.indexOf(token, offset);
-      if (start < 0) break;
-      ranges.push({ start, end: start + token.length });
-      offset = start + token.length;
-    }
-    rangesByToken.set(token, ranges);
   }
   const repeated = [...counts.values()].reduce((sum, count) => sum + Math.max(0, count - 2), 0);
   const points = Math.min(10, (repeated / units) * 3.5);
   const exampleRanges = [...counts.entries()]
     .filter(([, count]) => count > 2)
     .sort((a, b) => b[1] - a[1])
-    .flatMap(([token]) => rangesByToken.get(token) ?? []);
+    .flatMap(([token]) => occurrenceRanges(text, token));
   return {
     id: "repetition",
     label: lang === "zh" ? "词语重复偏多" : "Repeated wording",
@@ -556,34 +511,8 @@ function uniformitySignal(sentences: string[], lang: Lang): ScoreSignal {
  * @returns The score, a coarse level, and the hit breakdown (descending).
  */
 export function scoreText(text: string, lang: Lang): AiScore {
-  const evaluated = evaluateSignals(text, lang);
-  return { score: evaluated.score, level: evaluated.level, signals: evaluated.signals };
-}
-
-export function diagnoseText(text: string, lang: Lang): AiDiagnosticReport {
-  const evaluated = evaluateSignals(text, lang);
-  const issues = evaluated.signals.map((signal): DiagnosticIssue => ({
-    id: signal.id,
-    layer: signal.layer ?? "wording",
-    label: signal.label,
-    hits: signal.hits,
-    points: signal.points,
-    suggestion: signal.suggestion ?? defaultSuggestion(lang),
-    examples: signal.examples ?? [],
-  }));
-
-  return {
-    score: evaluated.score,
-    level: evaluated.level,
-    signals: evaluated.signals,
-    summary: diagnosticSummary(evaluated.score, issues, lang),
-    issues,
-  };
-}
-
-function evaluateSignals(text: string, lang: Lang): AiScore {
   const clean = (text ?? "").trim();
-  const sentences = splitForScoring(clean);
+  const sentences = sentenceRangesForScoring(clean).map((s) => s.text);
   const len = lang === "zh" ? Array.from(clean).length : clean.split(/\s+/).filter(Boolean).length;
   const units = Math.max(1, len / (lang === "zh" ? SCORE_FORMULA.zhUnitChars : SCORE_FORMULA.enUnitWords));
 
@@ -613,6 +542,26 @@ function evaluateSignals(text: string, lang: Lang): AiScore {
     .map((s) => ({ ...s, points: Math.round(s.points) }));
 
   return { score, level, signals: shown };
+}
+
+/** {@link scoreText} plus per-issue suggestions/examples and a one-line summary. */
+export function diagnoseText(text: string, lang: Lang): AiDiagnosticReport {
+  const evaluated = scoreText(text, lang);
+  const issues = evaluated.signals.map((signal): DiagnosticIssue => ({
+    id: signal.id,
+    layer: signal.layer ?? "wording",
+    label: signal.label,
+    hits: signal.hits,
+    points: signal.points,
+    suggestion: signal.suggestion ?? defaultSuggestion(lang),
+    examples: signal.examples ?? [],
+  }));
+
+  return {
+    ...evaluated,
+    summary: diagnosticSummary(evaluated.score, issues, lang),
+    issues,
+  };
 }
 
 function diagnosticSummary(score: number, issues: DiagnosticIssue[], lang: Lang): string {

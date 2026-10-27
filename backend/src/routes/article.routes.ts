@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { createDocxFromBlocks, parseDocx } from "../services/docx.js";
 import { splitSentences } from "../services/splitter.js";
 import {
@@ -15,6 +15,8 @@ import {
   resolveArticleDomain,
   type ArticleDomain,
   type ArticleRenderBlock,
+  type GenerateArticleInput,
+  type GeneratedArticle,
   type TopicOption,
 } from "../services/article.js";
 import { collectResearch, formatResearchContext } from "../services/research/aggregate.js";
@@ -25,7 +27,7 @@ import {
   hasDraftableEvidence,
   type ArticleEvidenceResult,
 } from "../services/research/evidencePipeline.js";
-import { searchLicensedMediaForArticle } from "../services/research/licensedMedia.js";
+import { searchLicensedMediaForArticle, type LicensedMediaItem } from "../services/research/licensedMedia.js";
 import type { ResearchBundle } from "../services/research/types.js";
 import {
   ArticleEvidenceValidationError,
@@ -123,23 +125,7 @@ router.post("/api/article/generate", async (req, res) => {
     const domain = resolveArticleDomain(domainId, customDomain, lang);
     res.json(await generateArticlePayload({ domain, topic, styleId, sceneId, targetLength, lang }));
   } catch (e) {
-    if (e instanceof ArticleLengthTargetError) {
-      res.status(422).json({ error: e.message, length: e.length });
-      return;
-    }
-    if (e instanceof ArticleModelOutputError) {
-      res.status(422).json({ error: tr(SERVER_MESSAGES.invalidArticleOutput, normalizeLang(req.body?.lang)) });
-      return;
-    }
-    if (e instanceof ArticleEvidenceIncompleteError) {
-      res.status(422).json({ error: e.message, evidence: e.evidence });
-      return;
-    }
-    if (e instanceof ArticleEvidenceValidationError) {
-      res.status(422).json({ error: e.message, audit: e.audit, repairCycles: e.repairCycles });
-      return;
-    }
-    res.status(500).json({ error: (e as Error).message });
+    sendArticleGenerationError(res, e, req.body?.lang);
   }
 });
 
@@ -181,25 +167,30 @@ router.post("/api/article/generate-from-title", async (req, res) => {
     });
     res.json({ ...payload, domain: matchedDomain.domain, matchedDomain });
   } catch (e) {
-    if (e instanceof ArticleLengthTargetError) {
-      res.status(422).json({ error: e.message, length: e.length });
-      return;
-    }
-    if (e instanceof ArticleModelOutputError) {
-      res.status(422).json({ error: tr(SERVER_MESSAGES.invalidArticleOutput, normalizeLang(req.body?.lang)) });
-      return;
-    }
-    if (e instanceof ArticleEvidenceIncompleteError) {
-      res.status(422).json({ error: e.message, evidence: e.evidence });
-      return;
-    }
-    if (e instanceof ArticleEvidenceValidationError) {
-      res.status(422).json({ error: e.message, audit: e.audit, repairCycles: e.repairCycles });
-      return;
-    }
-    res.status(500).json({ error: (e as Error).message });
+    sendArticleGenerationError(res, e, req.body?.lang);
   }
 });
+
+/** Map typed generation failures to a 422 with their diagnostics; anything else is a 500. */
+function sendArticleGenerationError(res: Response, e: unknown, rawLang: unknown): void {
+  if (e instanceof ArticleLengthTargetError) {
+    res.status(422).json({ error: e.message, length: e.length });
+    return;
+  }
+  if (e instanceof ArticleModelOutputError) {
+    res.status(422).json({ error: tr(SERVER_MESSAGES.invalidArticleOutput, normalizeLang(rawLang)) });
+    return;
+  }
+  if (e instanceof ArticleEvidenceIncompleteError) {
+    res.status(422).json({ error: e.message, evidence: e.evidence });
+    return;
+  }
+  if (e instanceof ArticleEvidenceValidationError) {
+    res.status(422).json({ error: e.message, audit: e.audit, repairCycles: e.repairCycles });
+    return;
+  }
+  res.status(500).json({ error: (e as Error).message });
+}
 
 /**
  * Run the full generation pipeline: research → draft → enrich → docx → store.
@@ -221,118 +212,31 @@ export async function generateArticlePayload(input: {
   const targetLength = input.targetLength ?? "medium";
   const topicTitle = typeof input.topic === "string" ? input.topic : input.topic.title;
   const evidenceRun = await collectArticleEvidence(input.domain.name, topicTitle);
-  if (!hasDraftableEvidence(evidenceRun.evidence)) {
-    const message = lang === "zh"
-      ? `经过 ${evidenceRun.evidence.iterations} 轮检索仍没有可用于成文的客观事实，已停止生成：${evidenceRun.evidence.stopReason}`
-      : `Drafting stopped because ${evidenceRun.evidence.iterations} research rounds produced no objective claim that can support an article: ${evidenceRun.evidence.stopReason}`;
-    throw new ArticleEvidenceIncompleteError(message, evidenceRun.evidence);
-  }
+  assertDraftableEvidence(evidenceRun.evidence, lang);
   const bundleWithImages = evidenceRun.bundle;
   const researchContext = formatArticleEvidenceContext(evidenceRun);
-  const builtin = input.styleId ? getBuiltinStyle(input.styleId, lang) : undefined;
-  const sceneProfile = writingSceneProfile(input.sceneId, lang);
-  const styleSummary = [sceneProfile, builtin?.profile ?? tr(ARTICLE_LABELS.defaultStyleSummary, lang)]
-    .filter(Boolean)
-    .join("\n\n");
-  const draftInput = {
-    domainName: input.domain.name,
-    topic: input.topic,
-    styleSummary,
-    targetLength,
-    researchContext,
-    researchCoverage: bundleWithImages.coverage,
-    sceneId: input.sceneId,
-    styleId: input.styleId,
-    lang,
-  };
-  let draft = await generateArticleDraft(draftInput);
-  let draftAudit = await auditArticleEvidenceDraft(
-    topicTitle,
-    draft,
-    evidenceRun.evidence.claims,
-    Math.min(bundleWithImages.items.length, 16),
+  const styleSummary = articleStyleSummary(input.styleId, input.sceneId, lang);
+  const { draft, draftAudit, repairCycles } = await draftWithEvidenceAudit(
     {
-      requireToneCheck: lang === "zh" && input.sceneId === "wechat",
-      evidenceSaturated: evidenceRun.evidence.saturated,
-      openGaps: latestCriticalGaps(evidenceRun.evidence),
-    }
+      domainName: input.domain.name,
+      topic: input.topic,
+      styleSummary,
+      targetLength,
+      researchContext,
+      researchCoverage: bundleWithImages.coverage,
+      sceneId: input.sceneId,
+      styleId: input.styleId,
+      lang,
+    },
+    topicTitle,
+    evidenceRun
   );
-  let repairCycles = 0;
-  while (!draftAudit.pass && repairCycles < 3) {
-    repairCycles += 1;
-    draft = await generateArticleDraft({
-      ...draftInput,
-      qualityRepairInstruction: evidenceDraftRepairInstruction(draftAudit, repairCycles),
-    });
-    draftAudit = await auditArticleEvidenceDraft(
-      topicTitle,
-      draft,
-      evidenceRun.evidence.claims,
-      Math.min(bundleWithImages.items.length, 16),
-      {
-        requireToneCheck: lang === "zh" && input.sceneId === "wechat",
-        evidenceSaturated: evidenceRun.evidence.saturated,
-        openGaps: latestCriticalGaps(evidenceRun.evidence),
-      }
-    );
-  }
-  if (!draftAudit.pass) {
-    const message = lang === "zh"
-      ? "文章在 3 轮修复后仍未通过事实、引用、语气或主题一致性检查，已停止交付。"
-      : "The article still failed its fact, citation, tone, or topic-alignment gates after three repair cycles.";
-    throw new ArticleEvidenceValidationError(message, draftAudit, repairCycles);
-  }
-  const desiredFigureCount = targetLength === "short" ? 2 : targetLength === "long" ? 6 : 4;
-  let article = await enrichArticleWithResearch(
-    draft,
-    bundleWithImages.items,
-    new Date(bundleWithImages.generatedAt),
-    lang
-  );
-  const actualFigureCount = Number(Boolean(article.figure)) + (article.bodyFigures?.length ?? 0);
-  let supplementalMediaForValidation: Awaited<ReturnType<typeof searchLicensedMediaForArticle>> = [];
-  if (actualFigureCount < desiredFigureCount) {
-    const supplementalMedia = await searchLicensedMediaForArticle(
-      draft,
-      bundleWithImages.items.map((item) => item.query),
-      desiredFigureCount - actualFigureCount
-    );
-    if (supplementalMedia.length > 0) {
-      supplementalMediaForValidation = supplementalMedia;
-      article = await enrichArticleWithResearch(
-        draft,
-        bundleWithImages.items,
-        new Date(bundleWithImages.generatedAt),
-        lang,
-        { supplementalMedia }
-      );
-    }
-  }
-  let mediaMatch = articleMediaMatchesBody(
-    article,
-    bundleWithImages.items,
-    supplementalMediaForValidation
-  );
-  if (!mediaMatch) {
-    // A missing image is safer than an image whose provenance/body relation no
-    // longer validates. This keeps the article deliverable without pretending
-    // that a discarded visual passed the gate.
-    article = { ...article, figure: undefined, bodyFigures: [] };
-    mediaMatch = articleMediaMatchesBody(article, bundleWithImages.items);
-  }
+  const { article, mediaMatch } = await attachValidatedMedia(draft, bundleWithImages, targetLength, lang);
   const length = measureArticleLength(article.paragraphs, lang, targetLength);
-
-  const docx = await createDocxFromBlocks(articleToDocBlocks(article, lang));
-  const parsed = await parseDocx(docx);
-  const renderBlocks = articleToRenderBlocks(article, parsed.paragraphs, lang);
-  const rewriteIndices = renderBlocks
-    .filter((block): block is Extract<ArticleRenderBlock, { type: "paragraph" }> => block.type === "paragraph")
-    .map((block) => block.paragraphIndex)
-    .filter((index): index is number => typeof index === "number");
-  const rec = saveDoc({ buf: docx, paragraphs: parsed.paragraphs, styleSummary, rewriteIndices });
+  const saved = await saveArticleDocument(article, styleSummary, lang);
 
   return {
-    docId: rec.id,
+    docId: saved.docId,
     styleSummary,
     length,
     research: withoutRemoteImageUrls(bundleWithImages),
@@ -345,6 +249,114 @@ export async function generateArticlePayload(input: {
         mediaMatch,
       },
     },
+    renderBlocks: saved.renderBlocks,
+    titleIndex: saved.titleIndex,
+    paragraphs: saved.paragraphs,
+  };
+}
+
+function assertDraftableEvidence(evidence: ArticleEvidenceResult["evidence"], lang: Lang): void {
+  if (hasDraftableEvidence(evidence)) return;
+  const message = lang === "zh"
+    ? `经过 ${evidence.iterations} 轮检索仍没有可用于成文的客观事实，已停止生成：${evidence.stopReason}`
+    : `Drafting stopped because ${evidence.iterations} research rounds produced no objective claim that can support an article: ${evidence.stopReason}`;
+  throw new ArticleEvidenceIncompleteError(message, evidence);
+}
+
+/** The writing-scene profile followed by the built-in style profile (or the default style). */
+function articleStyleSummary(styleId: string | undefined, sceneId: string | undefined, lang: Lang): string {
+  const builtin = styleId ? getBuiltinStyle(styleId, lang) : undefined;
+  const sceneProfile = writingSceneProfile(sceneId, lang);
+  return [sceneProfile, builtin?.profile ?? tr(ARTICLE_LABELS.defaultStyleSummary, lang)]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+/** Draft, audit against the fact ledger, and redraft with the audit feedback up to three times. */
+async function draftWithEvidenceAudit(
+  draftInput: GenerateArticleInput & { lang: Lang },
+  topicTitle: string,
+  { bundle, evidence }: ArticleEvidenceResult
+) {
+  const auditDraft = (draft: GeneratedArticle) => auditArticleEvidenceDraft(
+    topicTitle,
+    draft,
+    evidence.claims,
+    Math.min(bundle.items.length, 16),
+    {
+      requireToneCheck: draftInput.lang === "zh" && draftInput.sceneId === "wechat",
+      evidenceSaturated: evidence.saturated,
+      openGaps: latestCriticalGaps(evidence),
+    }
+  );
+  let draft = await generateArticleDraft(draftInput);
+  let draftAudit = await auditDraft(draft);
+  let repairCycles = 0;
+  while (!draftAudit.pass && repairCycles < 3) {
+    repairCycles += 1;
+    draft = await generateArticleDraft({
+      ...draftInput,
+      qualityRepairInstruction: evidenceDraftRepairInstruction(draftAudit, repairCycles),
+    });
+    draftAudit = await auditDraft(draft);
+  }
+  if (!draftAudit.pass) {
+    const message = draftInput.lang === "zh"
+      ? "文章在 3 轮修复后仍未通过事实、引用、语气或主题一致性检查，已停止交付。"
+      : "The article still failed its fact, citation, tone, or topic-alignment gates after three repair cycles.";
+    throw new ArticleEvidenceValidationError(message, draftAudit, repairCycles);
+  }
+  return { draft, draftAudit, repairCycles };
+}
+
+/**
+ * Attach source figures, top up with open-license media when the length tier's
+ * figure allowance is not met, then re-run the media gate on the result.
+ */
+async function attachValidatedMedia(
+  draft: GeneratedArticle,
+  bundle: ResearchBundle,
+  targetLength: ArticleLengthTier,
+  lang: Lang
+): Promise<{ article: GeneratedArticle; mediaMatch: boolean }> {
+  const accessedAt = new Date(bundle.generatedAt);
+  const desiredFigureCount = targetLength === "short" ? 2 : targetLength === "long" ? 6 : 4;
+  let article = await enrichArticleWithResearch(draft, bundle.items, accessedAt, lang);
+  const actualFigureCount = Number(Boolean(article.figure)) + (article.bodyFigures?.length ?? 0);
+  let supplementalMediaForValidation: LicensedMediaItem[] = [];
+  if (actualFigureCount < desiredFigureCount) {
+    const supplementalMedia = await searchLicensedMediaForArticle(
+      draft,
+      bundle.items.map((item) => item.query),
+      desiredFigureCount - actualFigureCount
+    );
+    if (supplementalMedia.length > 0) {
+      supplementalMediaForValidation = supplementalMedia;
+      article = await enrichArticleWithResearch(draft, bundle.items, accessedAt, lang, { supplementalMedia });
+    }
+  }
+  if (articleMediaMatchesBody(article, bundle.items, supplementalMediaForValidation)) {
+    return { article, mediaMatch: true };
+  }
+  // A missing image is safer than an image whose provenance/body relation no
+  // longer validates. This keeps the article deliverable without pretending
+  // that a discarded visual passed the gate.
+  const withoutMedia = { ...article, figure: undefined, bodyFigures: [] };
+  return { article: withoutMedia, mediaMatch: articleMediaMatchesBody(withoutMedia, bundle.items) };
+}
+
+/** Render to docx, persist it, and return the editor's view of the stored paragraphs. */
+async function saveArticleDocument(article: GeneratedArticle, styleSummary: string, lang: Lang) {
+  const docx = await createDocxFromBlocks(articleToDocBlocks(article, lang));
+  const parsed = await parseDocx(docx);
+  const renderBlocks = articleToRenderBlocks(article, parsed.paragraphs, lang);
+  const rewriteIndices = renderBlocks
+    .filter((block): block is Extract<ArticleRenderBlock, { type: "paragraph" }> => block.type === "paragraph")
+    .map((block) => block.paragraphIndex)
+    .filter((index): index is number => typeof index === "number");
+  const rec = saveDoc({ buf: docx, paragraphs: parsed.paragraphs, styleSummary, rewriteIndices });
+  return {
+    docId: rec.id,
     renderBlocks,
     titleIndex: titleIndexOf(parsed.paragraphs),
     paragraphs: parsed.paragraphs.map((p) => ({

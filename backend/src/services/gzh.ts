@@ -362,6 +362,19 @@ function buildChunkPrompt(doc: GzhArticleStructure, chunk: GzhChunk, author: str
   ].join("\n");
 }
 
+/** A deliberately small SVG subset used by the bundled local themes. */
+const SVG_GZH_TAGS = new Set([
+  "svg",
+  "circle",
+  "ellipse",
+  "line",
+  "path",
+  "polygon",
+  "polyline",
+  "rect",
+  "text",
+  "tspan",
+]);
 const SAFE_GZH_TAGS = new Set([
   "a",
   "br",
@@ -386,32 +399,9 @@ const SAFE_GZH_TAGS = new Set([
   "tr",
   "u",
   "ul",
-  // A deliberately small SVG subset used by the bundled local themes.
-  "svg",
-  "circle",
-  "ellipse",
-  "line",
-  "path",
-  "polygon",
-  "polyline",
-  "rect",
-  "text",
-  "tspan",
+  ...SVG_GZH_TAGS,
 ]);
-
 const VOID_GZH_TAGS = new Set(["br", "hr", "img"]);
-const SVG_GZH_TAGS = new Set([
-  "svg",
-  "circle",
-  "ellipse",
-  "line",
-  "path",
-  "polygon",
-  "polyline",
-  "rect",
-  "text",
-  "tspan",
-]);
 const SAFE_GLOBAL_ATTRIBUTES = new Set(["style", "role", "aria-hidden", "aria-label"]);
 const SAFE_SVG_ATTRIBUTES = new Set([
   "cx",
@@ -613,35 +603,24 @@ function sanitizeGzhAttributes(tag: string, raw: string): string {
   let cursor = 0;
 
   while (cursor < raw.length) {
-    while (/\s/.test(raw[cursor] ?? "")) cursor += 1;
+    cursor = skipSpaces(raw, cursor);
     if (cursor >= raw.length) break;
 
-    const nameMatch = raw.slice(cursor).match(/^([^\s=/>]+)/);
-    if (!nameMatch) {
+    const originalName = raw.slice(cursor).match(/^([^\s=/>]+)/)?.[1];
+    if (!originalName) {
       cursor += 1;
       continue;
     }
-    const originalName = nameMatch[1];
     const name = originalName.toLowerCase();
-    cursor += originalName.length;
-    while (/\s/.test(raw[cursor] ?? "")) cursor += 1;
+    cursor = skipSpaces(raw, cursor + originalName.length);
 
     let value = "";
     if (raw[cursor] === "=") {
-      cursor += 1;
-      while (/\s/.test(raw[cursor] ?? "")) cursor += 1;
-      const quote = raw[cursor];
-      if (quote === '"' || quote === "'") {
-        cursor += 1;
-        const end = raw.indexOf(quote, cursor);
-        if (end < 0) break;
-        value = raw.slice(cursor, end);
-        cursor = end + 1;
-      } else {
-        const valueMatch = raw.slice(cursor).match(/^[^\s>]+/);
-        value = valueMatch?.[0] ?? "";
-        cursor += value.length || 1;
-      }
+      const parsed = readAttributeValue(raw, skipSpaces(raw, cursor + 1));
+      // An unterminated quoted value drops it and every attribute after it.
+      if (!parsed) break;
+      value = parsed.value;
+      cursor = parsed.end;
     }
 
     if (seen.has(name)) continue;
@@ -652,6 +631,23 @@ function sanitizeGzhAttributes(tag: string, raw: string): string {
     attributes.push(`${outputName}="${escapeHtmlAttribute(safe)}"`);
   }
   return attributes.length ? ` ${attributes.join(" ")}` : "";
+}
+
+function skipSpaces(raw: string, cursor: number): number {
+  let next = cursor;
+  while (/\s/.test(raw[next] ?? "")) next += 1;
+  return next;
+}
+
+/** Read a quoted or bare attribute value at `cursor`; undefined when a quote is never closed. */
+function readAttributeValue(raw: string, cursor: number): { value: string; end: number } | undefined {
+  const quote = raw[cursor];
+  if (quote === '"' || quote === "'") {
+    const close = raw.indexOf(quote, cursor + 1);
+    return close < 0 ? undefined : { value: raw.slice(cursor + 1, close), end: close + 1 };
+  }
+  const value = raw.slice(cursor).match(/^[^\s>]+/)?.[0] ?? "";
+  return { value, end: cursor + (value.length || 1) };
 }
 
 function sanitizeGzhAttribute(tag: string, name: string, value: string): string | undefined {
@@ -723,16 +719,15 @@ function decodeCssEscapes(value: string): string {
     .replace(/\\([^\r\n])/g, "$1");
 }
 
+const SECURITY_NAMED_ENTITIES: Record<string, string> = { colon: ":", tab: "\t", newline: "\n", amp: "&" };
+
 function decodeHtmlForSecurity(value: string): string {
   let decoded = value;
   for (let pass = 0; pass < 3; pass += 1) {
     const next = decoded
       .replace(/&#x([0-9a-f]+);?/gi, (_match, hex: string) => safeCodePoint(hex, 16))
       .replace(/&#([0-9]+);?/g, (_match, decimal: string) => safeCodePoint(decimal, 10))
-      .replace(/&(colon|tab|newline|amp);/gi, (_match, entity: string) => {
-        const named: Record<string, string> = { colon: ":", tab: "\t", newline: "\n", amp: "&" };
-        return named[entity.toLowerCase()];
-      });
+      .replace(/&(colon|tab|newline|amp);/gi, (_match, entity: string) => SECURITY_NAMED_ENTITIES[entity.toLowerCase()]);
     if (next === decoded) break;
     decoded = next;
   }
@@ -787,6 +782,27 @@ function extractContainer(theme: GzhTheme): { open: string; close: string } {
   };
 }
 
+/** 生成一块 HTML；校验有错时请模型修一轮，修复版违规不增加才采用。 */
+async function renderChunk(prompt: string, system: string, lang: Lang): Promise<string> {
+  const html = sanitizeChunkHtml(await chat(prompt, { system, temperature: 0.4 }));
+  if (!html) throw new Error(lang === "zh" ? "模型返回为空，请重试" : "Model returned empty output; try again.");
+  const check = validateGzhHtml(html);
+  if (!check.errors.length) return html;
+
+  const fixed = sanitizeChunkHtml(
+    await chat(
+      [
+        "下面这段公众号 HTML 违反了平台规则，请修复后重新输出完整 HTML 片段（不要解释、不要围栏）：",
+        ...check.errors.map((e) => `- ${e}`),
+        "",
+        html,
+      ].join("\n"),
+      { system, temperature: 0.2 }
+    )
+  );
+  return fixed && validateGzhHtml(fixed).errors.length <= check.errors.length ? fixed : html;
+}
+
 const MAX_INPUT_CHARS = 30_000;
 
 /**
@@ -815,26 +831,7 @@ export async function formatGzhArticle(input: GzhFormatInput): Promise<GzhFormat
 
   const rendered: string[] = [];
   for (const chunk of chunks) {
-    let html = sanitizeChunkHtml(
-      await chat(buildChunkPrompt(doc, chunk, author), { system, temperature: 0.4 })
-    );
-    if (!html) throw new Error(input.lang === "zh" ? "模型返回为空，请重试" : "Model returned empty output; try again.");
-    const check = validateGzhHtml(html);
-    if (check.errors.length) {
-      const fixed = sanitizeChunkHtml(
-        await chat(
-          [
-            "下面这段公众号 HTML 违反了平台规则，请修复后重新输出完整 HTML 片段（不要解释、不要围栏）：",
-            ...check.errors.map((e) => `- ${e}`),
-            "",
-            html,
-          ].join("\n"),
-          { system, temperature: 0.2 }
-        )
-      );
-      if (fixed && validateGzhHtml(fixed).errors.length <= check.errors.length) html = fixed;
-    }
-    rendered.push(html);
+    rendered.push(await renderChunk(buildChunkPrompt(doc, chunk, author), system, input.lang));
   }
 
   const container = extractContainer(theme);

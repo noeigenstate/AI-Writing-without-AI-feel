@@ -1,13 +1,26 @@
 import { useStore } from "../../lib/store.js";
-import { messages } from "../../lib/i18n.js";
+import { messages, type Dict } from "../../lib/i18n.js";
 import type { AiScoreDTO, DiagnosticReportDTO } from "../../lib/api.js";
 
 /** Map a score level to its localized label. */
-function levelText(level: AiScoreDTO["level"], t: (typeof messages)["en"]): string {
+function levelText(level: AiScoreDTO["level"], t: Dict): string {
   return level === "high" ? t.scoreLevelHigh : level === "medium" ? t.scoreLevelMedium : t.scoreLevelLow;
 }
 
-function DiagnosisReport({ report, t }: { report: DiagnosticReportDTO; t: (typeof messages)["en"] }) {
+type DiagnosticIssue = DiagnosticReportDTO["issues"][number];
+
+/** Layer, label and deducted points of one diagnosed issue. */
+function IssueHead({ issue, t }: { issue: DiagnosticIssue; t: Dict }) {
+  return (
+    <div className="diagnosis-item-head">
+      <span>{t.diagnosisLayer(issue.layer)}</span>
+      <strong>{issue.label}</strong>
+      <small>-{issue.points}</small>
+    </div>
+  );
+}
+
+function DiagnosisReport({ report, t }: { report: DiagnosticReportDTO; t: Dict }) {
   return (
     <section className="diagnosis-report">
       <div className="diagnosis-summary">
@@ -20,11 +33,7 @@ function DiagnosisReport({ report, t }: { report: DiagnosticReportDTO; t: (typeo
         <div className="diagnosis-list">
           {report.issues.map((issue) => (
             <article className="diagnosis-item" key={issue.id}>
-              <div className="diagnosis-item-head">
-                <span>{t.diagnosisLayer(issue.layer)}</span>
-                <strong>{issue.label}</strong>
-                <small>-{issue.points}</small>
-              </div>
+              <IssueHead issue={issue} t={t} />
               <p>
                 <strong>{t.diagnosisSuggestion}: </strong>
                 {issue.suggestion}
@@ -59,7 +68,7 @@ function Gauge({ s, label }: { s: AiScoreDTO; label?: string }) {
 }
 
 /** Per-pattern hit statistics: before-vs-after columns, or just current hits when no `after`. */
-function Stats({ before, after, t }: { before: AiScoreDTO; after?: AiScoreDTO; t: (typeof messages)["en"] }) {
+function Stats({ before, after, t }: { before: AiScoreDTO; after?: AiScoreDTO; t: Dict }) {
   const afterMap = new Map((after?.signals ?? []).map((s) => [s.id, s.hits]));
   const rows = before.signals
     .filter((s) => s.hits > 0)
@@ -101,6 +110,37 @@ function Stats({ before, after, t }: { before: AiScoreDTO; after?: AiScoreDTO; t
   );
 }
 
+/** Issues still flagged after the rewrite, with a hint to keep polishing. */
+function RemainingIssues({ issues, t }: { issues: DiagnosticIssue[]; t: Dict }) {
+  return (
+    <details className="score-details diagnosis-details" open>
+      <summary>{t.remainingIssuesTitle}</summary>
+      <div className="diagnosis-report">
+        <div className="diagnosis-summary">
+          <strong>{t.remainingIssuesHint}</strong>
+          <p>{t.continuePolishHint}</p>
+        </div>
+        <div className="diagnosis-list">
+          {issues.map((issue) => (
+            <article className="diagnosis-item" key={`remaining-${issue.id}`}>
+              <IssueHead issue={issue} t={t} />
+              <p>{issue.suggestion}</p>
+            </article>
+          ))}
+        </div>
+      </div>
+    </details>
+  );
+}
+
+/** Pattern hits the rewrite removed; a pattern that gained hits counts as zero. */
+function countRemovedHits(before: AiScoreDTO, after: AiScoreDTO): number {
+  return before.signals.reduce((sum, s) => {
+    const a = after.signals.find((x) => x.id === s.id)?.hits ?? 0;
+    return sum + Math.max(0, s.hits - a);
+  }, 0);
+}
+
 function issuesOf(score: AiScoreDTO | undefined): DiagnosticReportDTO["issues"] {
   return score && "issues" in score ? (score as DiagnosticReportDTO).issues : [];
 }
@@ -123,12 +163,7 @@ export default function ScoreBar() {
   const after = "after" in head ? head.after : undefined;
   const gain = after ? after.score - before.score : 0;
 
-  const totalRemoved = after
-    ? before.signals.reduce((sum, s) => {
-        const a = after.signals.find((x) => x.id === s.id)?.hits ?? 0;
-        return sum + Math.max(0, s.hits - a);
-      }, 0)
-    : 0;
+  const totalRemoved = after ? countRemovedHits(before, after) : 0;
   const remainingIssues = issuesOf(after).slice(0, 4);
 
   const headline = after ?? before;
@@ -173,29 +208,7 @@ export default function ScoreBar() {
         </details>
       )}
 
-      {after && remainingIssues.length > 0 && (
-        <details className="score-details diagnosis-details" open>
-          <summary>{t.remainingIssuesTitle}</summary>
-          <div className="diagnosis-report">
-            <div className="diagnosis-summary">
-              <strong>{t.remainingIssuesHint}</strong>
-              <p>{t.continuePolishHint}</p>
-            </div>
-            <div className="diagnosis-list">
-              {remainingIssues.map((issue) => (
-                <article className="diagnosis-item" key={`remaining-${issue.id}`}>
-                  <div className="diagnosis-item-head">
-                    <span>{t.diagnosisLayer(issue.layer)}</span>
-                    <strong>{issue.label}</strong>
-                    <small>-{issue.points}</small>
-                  </div>
-                  <p>{issue.suggestion}</p>
-                </article>
-              ))}
-            </div>
-          </div>
-        </details>
-      )}
+      {after && remainingIssues.length > 0 && <RemainingIssues issues={remainingIssues} t={t} />}
 
       <p className="score-foot">{t.scoreHint}</p>
     </section>

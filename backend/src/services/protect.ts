@@ -14,10 +14,8 @@ export interface ProtectedFragment {
   text: string;
 }
 
-export interface ProtectionViolation {
-  type: ProtectedFragmentType;
-  text: string;
-}
+/** A protected fragment from the original that the rewrite no longer contains. */
+export type ProtectionViolation = ProtectedFragment;
 
 const FRAGMENT_PATTERNS: { type: ProtectedFragmentType; re: RegExp }[] = [
   { type: "url", re: /https?:\/\/[^\s"'<>）)]+/gi },
@@ -49,10 +47,7 @@ export function extractProtectedFragments(text: string): ProtectedFragment[] {
 
 export function findProtectionViolations(original: string, rewritten: string): ProtectionViolation[] {
   const normalized = rewritten.normalize("NFKC");
-  return extractProtectedFragments(original).filter((fragment) => {
-    const value = fragment.text.normalize("NFKC");
-    return !normalized.includes(value);
-  });
+  return extractProtectedFragments(original).filter((fragment) => !normalized.includes(fragment.text.normalize("NFKC")));
 }
 
 export function preservesProtectedFragments(original: string, rewritten: string): boolean {

@@ -1,23 +1,32 @@
 import { useEffect, useState } from "react";
 import { useStore } from "./lib/store.js";
 import UploadPanel from "./components/upload/UploadPanel.js";
-import ArticleGenerator from "./components/generate/ArticleGenerator.js";
+import ArticleGenerator, { type GeneratorView } from "./components/generate/ArticleGenerator.js";
 import NovelGenerator from "./components/novel/NovelGenerator.js";
 import DocEditor from "./components/editor/DocEditor.js";
 import ScoreBar from "./components/editor/ScoreBar.js";
 import { BookIcon, Sparkle, WordIcon } from "./components/common/icons.js";
 import ProgressBanner from "./components/common/ProgressBanner.js";
-import { messages } from "./lib/i18n.js";
+import { messages, type Dict, type Lang } from "./lib/i18n.js";
+
+type Mode = "rewrite" | "generate" | "novel";
+
+const NAV_ITEMS = [
+  { mode: "rewrite", index: "01", Icon: WordIcon, label: "modeRewrite" },
+  { mode: "generate", index: "02", Icon: Sparkle, label: "modeGenerate" },
+  { mode: "novel", index: "03", Icon: BookIcon, label: "modeNovel" },
+] as const;
 
 /** Root component: sidebar navigation, gradient hero, and the active view. */
 export default function App() {
   const { lang, step, mode, busy, progress, error, styleSummary, workspaces, reset, setMode, setLang } = useStore();
-  const [generatorView, setGeneratorView] = useState<"setup" | "results">("setup");
+  const [generatorView, setGeneratorView] = useState<GeneratorView>("setup");
   const t = messages[lang];
   const rewriteStep = mode === "rewrite" ? step : workspaces.rewrite.step;
   const generateStep = mode === "generate" ? step : workspaces.generate.step;
   const novelStep = mode === "novel" ? step : workspaces.novel.step;
   const showUploadHero = step === "upload" && (mode !== "generate" || generatorView === "setup");
+  const hero = heroCopy(t, mode);
 
   useEffect(() => {
     document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
@@ -26,10 +35,6 @@ export default function App() {
   useEffect(() => {
     if (generateStep !== "upload") setGeneratorView("setup");
   }, [generateStep]);
-
-  function selectMode(next: "rewrite" | "generate" | "novel") {
-    setMode(next);
-  }
 
   return (
     <div className="layout" data-mode={mode}>
@@ -40,39 +45,20 @@ export default function App() {
 
         <nav className="side-nav" aria-label={t.navTools}>
           <span className="side-caption">{t.navTools}</span>
-          <button
-            className={`side-item${mode === "rewrite" ? " active" : ""}`}
-            onClick={() => selectMode("rewrite")}
-            aria-current={mode === "rewrite" ? "page" : undefined}
-          >
-            <span className="side-index" aria-hidden="true">01</span>
-            <span className="side-icon">
-              <WordIcon />
-            </span>
-            {t.modeRewrite}
-          </button>
-          <button
-            className={`side-item${mode === "generate" ? " active" : ""}`}
-            onClick={() => selectMode("generate")}
-            aria-current={mode === "generate" ? "page" : undefined}
-          >
-            <span className="side-index" aria-hidden="true">02</span>
-            <span className="side-icon">
-              <Sparkle />
-            </span>
-            {t.modeGenerate}
-          </button>
-          <button
-            className={`side-item${mode === "novel" ? " active" : ""}`}
-            onClick={() => selectMode("novel")}
-            aria-current={mode === "novel" ? "page" : undefined}
-          >
-            <span className="side-index" aria-hidden="true">03</span>
-            <span className="side-icon">
-              <BookIcon />
-            </span>
-            {t.modeNovel}
-          </button>
+          {NAV_ITEMS.map(({ mode: itemMode, index, Icon, label }) => (
+            <button
+              key={itemMode}
+              className={`side-item${mode === itemMode ? " active" : ""}`}
+              onClick={() => setMode(itemMode)}
+              aria-current={mode === itemMode ? "page" : undefined}
+            >
+              <span className="side-index" aria-hidden="true">{index}</span>
+              <span className="side-icon">
+                <Icon />
+              </span>
+              {t[label]}
+            </button>
+          ))}
         </nav>
 
         <div className="side-foot">
@@ -88,29 +74,13 @@ export default function App() {
       <div className="main-pane">
         <div className="workspace-folio" aria-hidden="true">
           <span>AI—001</span>
-          <span>
-            {mode === "rewrite"
-              ? (lang === "zh" ? "改写工作台" : "REWRITE DESK")
-              : mode === "novel"
-                ? (lang === "zh" ? "小说工作台" : "FICTION DESK")
-                : generatorView === "results"
-                  ? (lang === "zh" ? "标题提案台" : "TITLE DESK")
-                  : (lang === "zh" ? "写作工作台" : "WRITING DESK")}
-          </span>
-          <span>
-            {mode === "novel"
-              ? (lang === "zh" ? "人物可信 · 情节连贯" : "CONSISTENT VOICE · COHERENT PLOT")
-              : (lang === "zh" ? "字句清楚 · 依据可查" : "CLEAR COPY · VISIBLE SOURCES")}
-          </span>
+          <span>{deskName(mode, generatorView, lang)}</span>
+          <span>{deskMotto(mode, lang)}</span>
         </div>
         {showUploadHero ? (
           <header className="hero">
-            <h1 className="hero-title">
-              {mode === "rewrite" ? t.heroRewriteTitle : mode === "generate" ? t.heroGenerateTitle : t.heroNovelTitle}
-            </h1>
-            <p className="hero-sub">
-              {mode === "rewrite" ? t.heroRewriteSub : mode === "generate" ? t.heroGenerateSub : t.heroNovelSub}
-            </p>
+            <h1 className="hero-title">{hero.title}</h1>
+            <p className="hero-sub">{hero.sub}</p>
             {mode === "generate" && <p className="hero-proxy-hint">{t.researchProxyHint}</p>}
           </header>
         ) : step !== "upload" ? (
@@ -156,4 +126,24 @@ export default function App() {
       </div>
     </div>
   );
+}
+
+function heroCopy(t: Dict, mode: Mode): { title: string; sub: string } {
+  if (mode === "rewrite") return { title: t.heroRewriteTitle, sub: t.heroRewriteSub };
+  if (mode === "generate") return { title: t.heroGenerateTitle, sub: t.heroGenerateSub };
+  return { title: t.heroNovelTitle, sub: t.heroNovelSub };
+}
+
+/** Decorative folio label naming the current desk. */
+function deskName(mode: Mode, generatorView: GeneratorView, lang: Lang): string {
+  const zh = lang === "zh";
+  if (mode === "rewrite") return zh ? "改写工作台" : "REWRITE DESK";
+  if (mode === "novel") return zh ? "小说工作台" : "FICTION DESK";
+  if (generatorView === "results") return zh ? "标题提案台" : "TITLE DESK";
+  return zh ? "写作工作台" : "WRITING DESK";
+}
+
+function deskMotto(mode: Mode, lang: Lang): string {
+  if (mode === "novel") return lang === "zh" ? "人物可信 · 情节连贯" : "CONSISTENT VOICE · COHERENT PLOT";
+  return lang === "zh" ? "字句清楚 · 依据可查" : "CLEAR COPY · VISIBLE SOURCES";
 }

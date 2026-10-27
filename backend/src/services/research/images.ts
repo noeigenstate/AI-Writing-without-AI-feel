@@ -7,7 +7,7 @@ import {
   fetchBinaryWithOutboundPolicy,
   fetchTextWithOutboundPolicy,
 } from "./networkSafety.js";
-import { asString, isRecord } from "./parse.js";
+import { asString, isRecord, tryParseJson } from "./parse.js";
 import type { ResearchItem } from "./types.js";
 
 const SOURCE_PAGE_MAX_BYTES = 700_000;
@@ -54,6 +54,7 @@ const GIF_MAX_TOTAL_PLAYBACK_COMPOSITED_PIXELS = 96_000_000;
 const GIF_MIN_FRAME_DURATION_MS = 20;
 const GIF_MAX_LZW_CODES = 1_000_000;
 const PNG_UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 export interface SafeGifMetadata {
   width: number;
@@ -352,174 +353,219 @@ function releaseStaticImageDecodeSlot(): void {
 /** Parse a complete, non-animated PNG and bound both pixels and inflation. */
 export function validatePngStructure(bytes: Buffer): SafeRasterMetadata | undefined {
   try {
-    const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-    if (
-      bytes.length < 45 ||
-      bytes.length > IMAGE_MAX_BYTES ||
-      !bytes.subarray(0, signature.length).equals(signature)
-    ) {
-      return undefined;
-    }
+    if (bytes.length < 45 || bytes.length > IMAGE_MAX_BYTES || !hasPngSignature(bytes)) return undefined;
 
-    let offset = signature.length;
-    let chunkCount = 0;
-    let width = 0;
-    let height = 0;
-    let bitDepth = 0;
-    let colorType = -1;
-    let interlaceMethod = -1;
-    let paletteEntries = 0;
-    let sawHeader = false;
-    let sawPalette = false;
-    let sawImageData = false;
-    let endedImageData = false;
-    let sawEnd = false;
-    let sawIccProfile = false;
-    let ancillaryChunkCount = 0;
-    let ancillaryBytes = 0;
-    let decodedMetadataBytes = 0;
-    let compressedLength = 0;
-    const compressedChunks: Buffer[] = [];
+    let offset = PNG_SIGNATURE.length;
+    let header: PngHeader | undefined;
+    const state: PngChunkState = {
+      paletteEntries: 0,
+      sawPalette: false,
+      sawImageData: false,
+      endedImageData: false,
+      sawIccProfile: false,
+      ancillaryChunkCount: 0,
+      ancillaryBytes: 0,
+      decodedMetadataBytes: 0,
+      compressedLength: 0,
+      compressedChunks: [],
+    };
 
-    while (offset < bytes.length) {
-      chunkCount += 1;
-      if (chunkCount > IMAGE_MAX_CONTAINER_BLOCKS || offset + 12 > bytes.length) return undefined;
-      const chunkLength = bytes.readUInt32BE(offset);
-      const typeOffset = offset + 4;
-      const dataOffset = typeOffset + 4;
-      const dataEnd = dataOffset + chunkLength;
-      const chunkEnd = dataEnd + 4;
-      if (dataEnd < dataOffset || chunkEnd > bytes.length || !isPngChunkType(bytes, typeOffset)) {
-        return undefined;
-      }
-      if (pngCrc32(bytes, typeOffset, dataEnd) !== bytes.readUInt32BE(dataEnd)) return undefined;
-      const chunkType = bytes.toString("ascii", typeOffset, typeOffset + 4);
-      offset = chunkEnd;
+    for (let chunkCount = 1; offset < bytes.length; chunkCount += 1) {
+      if (chunkCount > IMAGE_MAX_CONTAINER_BLOCKS) return undefined;
+      const chunk = readPngChunk(bytes, offset);
+      if (!chunk) return undefined;
+      offset = chunk.end;
 
-      if (chunkType === "IHDR") {
-        if (chunkCount !== 1 || sawHeader || chunkLength !== 13) return undefined;
-        width = bytes.readUInt32BE(dataOffset);
-        height = bytes.readUInt32BE(dataOffset + 4);
-        bitDepth = bytes[dataOffset + 8];
-        colorType = bytes[dataOffset + 9];
-        const compressionMethod = bytes[dataOffset + 10];
-        const filterMethod = bytes[dataOffset + 11];
-        interlaceMethod = bytes[dataOffset + 12];
-        if (
-          !isSafeStaticDimensions(width, height) ||
-          !isValidPngColorMode(bitDepth, colorType) ||
-          compressionMethod !== 0 ||
-          filterMethod !== 0 ||
-          (interlaceMethod !== 0 && interlaceMethod !== 1)
-        ) {
-          return undefined;
-        }
-        sawHeader = true;
+      if (chunk.type === "IHDR") {
+        if (chunkCount !== 1 || header || chunk.length !== 13) return undefined;
+        header = parsePngHeader(bytes, chunk.dataOffset);
+        if (!header) return undefined;
         continue;
       }
-
-      if (!sawHeader) return undefined;
-      if ((bytes[typeOffset] & 0x20) !== 0) {
-        ancillaryChunkCount += 1;
-        ancillaryBytes += chunkLength;
-        if (
-          ancillaryChunkCount > PNG_MAX_ANCILLARY_CHUNKS ||
-          ancillaryBytes > PNG_MAX_ANCILLARY_BYTES ||
-          ancillaryBytes + decodedMetadataBytes > PNG_MAX_TOTAL_METADATA_BYTES
-        ) {
-          return undefined;
-        }
-      }
-      // APNG control/frame chunks opt into animation even when only one frame
-      // is declared, so reject the animation surface unconditionally.
-      if (chunkType === "acTL" || chunkType === "fcTL" || chunkType === "fdAT") return undefined;
-      if (sawImageData && chunkType !== "IDAT") endedImageData = true;
-
-      // Compressed article text is never rendered and gives attackers a second
-      // independent inflate surface, so do not accept it in PNG metadata.
-      if (chunkType === "zTXt") return undefined;
-      if (chunkType === "iTXt") {
-        if (!validateUncompressedPngInternationalText(bytes, dataOffset, dataEnd)) return undefined;
-        continue;
-      }
-      if (chunkType === "tEXt") {
-        if (!validatePngText(bytes, dataOffset, dataEnd)) return undefined;
-        continue;
-      }
-      if (chunkType === "iCCP") {
-        if (sawIccProfile || sawPalette || sawImageData) return undefined;
-        const profile = inflatePngIccProfile(bytes, dataOffset, dataEnd);
-        if (!profile) return undefined;
-        decodedMetadataBytes += profile.length;
-        if (ancillaryBytes + decodedMetadataBytes > PNG_MAX_TOTAL_METADATA_BYTES) return undefined;
-        sawIccProfile = true;
-        continue;
-      }
-
-      if (chunkType === "PLTE") {
-        if (sawPalette || sawImageData || chunkLength === 0 || chunkLength > 768 || chunkLength % 3 !== 0) {
-          return undefined;
-        }
-        paletteEntries = chunkLength / 3;
-        sawPalette = true;
-        continue;
-      }
-
-      if (chunkType === "IDAT") {
-        if (endedImageData) return undefined;
-        sawImageData = true;
-        compressedChunks.push(bytes.subarray(dataOffset, dataEnd));
-        compressedLength += chunkLength;
-        if (compressedLength > IMAGE_MAX_BYTES) return undefined;
-        continue;
-      }
-
-      if (sawImageData) endedImageData = true;
-      if (chunkType === "IEND") {
-        if (chunkLength !== 0 || !sawImageData || offset !== bytes.length) return undefined;
-        sawEnd = true;
-        break;
-      }
-
-      // Unknown critical chunks cannot be safely interpreted by this pipeline.
-      if ((bytes[typeOffset] & 0x20) === 0) return undefined;
-    }
-
-    if (
-      !sawEnd ||
-      compressedLength === 0 ||
-      (colorType === 3 && (!sawPalette || paletteEntries > 1 << bitDepth)) ||
-      ((colorType === 0 || colorType === 4) && sawPalette)
-    ) {
-      return undefined;
-    }
-
-    const scanlines = pngScanlineLayout(width, height, bitDepth, colorType, interlaceMethod);
-    const expectedInflatedBytes = scanlines.reduce((total, scanline) => {
-      return total + (scanline.rowBytes + 1) * scanline.rows;
-    }, 0);
-    if (
-      !Number.isSafeInteger(expectedInflatedBytes) ||
-      expectedInflatedBytes <= 0 ||
-      expectedInflatedBytes > PNG_MAX_INFLATED_BYTES
-    ) {
-      return undefined;
-    }
-    const inflated = inflateSync(Buffer.concat(compressedChunks, compressedLength), {
-      maxOutputLength: expectedInflatedBytes + 1,
-    });
-    if (inflated.length !== expectedInflatedBytes) return undefined;
-    let scanlineOffset = 0;
-    for (const scanline of scanlines) {
-      for (let row = 0; row < scanline.rows; row += 1) {
-        if (inflated[scanlineOffset] > 4) return undefined;
-        scanlineOffset += scanline.rowBytes + 1;
+      if (!header || !acceptPngChunk(bytes, chunk, state)) return undefined;
+      if (chunk.type === "IEND") {
+        if (chunk.length !== 0 || !state.sawImageData || offset !== bytes.length) return undefined;
+        return validatePngImageData(header, state);
       }
     }
-    return scanlineOffset === inflated.length ? { width, height } : undefined;
+    return undefined;
   } catch {
     return undefined;
   }
+}
+
+interface PngChunk {
+  type: string;
+  length: number;
+  dataOffset: number;
+  dataEnd: number;
+  end: number;
+  ancillary: boolean;
+}
+
+interface PngHeader {
+  width: number;
+  height: number;
+  bitDepth: number;
+  colorType: number;
+  interlaceMethod: number;
+}
+
+interface PngChunkState {
+  paletteEntries: number;
+  sawPalette: boolean;
+  sawImageData: boolean;
+  endedImageData: boolean;
+  sawIccProfile: boolean;
+  ancillaryChunkCount: number;
+  ancillaryBytes: number;
+  decodedMetadataBytes: number;
+  compressedLength: number;
+  compressedChunks: Buffer[];
+}
+
+/** Frame one length/type/data/CRC chunk; rejects truncation and CRC mismatches. */
+function readPngChunk(bytes: Buffer, offset: number): PngChunk | undefined {
+  if (offset + 12 > bytes.length) return undefined;
+  const length = bytes.readUInt32BE(offset);
+  const typeOffset = offset + 4;
+  const dataOffset = typeOffset + 4;
+  const dataEnd = dataOffset + length;
+  const end = dataEnd + 4;
+  if (dataEnd < dataOffset || end > bytes.length || !isPngChunkType(bytes, typeOffset)) return undefined;
+  if (pngCrc32(bytes, typeOffset, dataEnd) !== bytes.readUInt32BE(dataEnd)) return undefined;
+  return {
+    type: bytes.toString("ascii", typeOffset, typeOffset + 4),
+    length,
+    dataOffset,
+    dataEnd,
+    end,
+    ancillary: (bytes[typeOffset] & 0x20) !== 0,
+  };
+}
+
+function parsePngHeader(bytes: Buffer, dataOffset: number): PngHeader | undefined {
+  const header: PngHeader = {
+    width: bytes.readUInt32BE(dataOffset),
+    height: bytes.readUInt32BE(dataOffset + 4),
+    bitDepth: bytes[dataOffset + 8],
+    colorType: bytes[dataOffset + 9],
+    interlaceMethod: bytes[dataOffset + 12],
+  };
+  const compressionMethod = bytes[dataOffset + 10];
+  const filterMethod = bytes[dataOffset + 11];
+  if (
+    !isSafeStaticDimensions(header.width, header.height) ||
+    !isValidPngColorMode(header.bitDepth, header.colorType) ||
+    compressionMethod !== 0 ||
+    filterMethod !== 0 ||
+    (header.interlaceMethod !== 0 && header.interlaceMethod !== 1)
+  ) {
+    return undefined;
+  }
+  return header;
+}
+
+/** Account for one post-IHDR chunk; false rejects the whole image. */
+function acceptPngChunk(bytes: Buffer, chunk: PngChunk, state: PngChunkState): boolean {
+  if (chunk.ancillary && !countPngAncillaryChunk(state, chunk.length)) return false;
+  // APNG control/frame chunks opt into animation even when only one frame
+  // is declared, so reject the animation surface unconditionally.
+  if (chunk.type === "acTL" || chunk.type === "fcTL" || chunk.type === "fdAT") return false;
+  if (state.sawImageData && chunk.type !== "IDAT") state.endedImageData = true;
+
+  switch (chunk.type) {
+    // Compressed article text is never rendered and gives attackers a second
+    // independent inflate surface, so do not accept it in PNG metadata.
+    case "zTXt":
+      return false;
+    case "iTXt":
+      return validateUncompressedPngInternationalText(bytes, chunk.dataOffset, chunk.dataEnd);
+    case "tEXt":
+      return validatePngText(bytes, chunk.dataOffset, chunk.dataEnd);
+    case "iCCP":
+      return acceptPngIccProfile(bytes, chunk, state);
+    case "PLTE":
+      if (
+        state.sawPalette ||
+        state.sawImageData ||
+        chunk.length === 0 ||
+        chunk.length > 768 ||
+        chunk.length % 3 !== 0
+      ) {
+        return false;
+      }
+      state.paletteEntries = chunk.length / 3;
+      state.sawPalette = true;
+      return true;
+    case "IDAT":
+      if (state.endedImageData) return false;
+      state.sawImageData = true;
+      state.compressedChunks.push(bytes.subarray(chunk.dataOffset, chunk.dataEnd));
+      state.compressedLength += chunk.length;
+      return state.compressedLength <= IMAGE_MAX_BYTES;
+    case "IEND":
+      return true;
+    default:
+      // Unknown critical chunks cannot be safely interpreted by this pipeline.
+      return chunk.ancillary;
+  }
+}
+
+function countPngAncillaryChunk(state: PngChunkState, length: number): boolean {
+  state.ancillaryChunkCount += 1;
+  state.ancillaryBytes += length;
+  return (
+    state.ancillaryChunkCount <= PNG_MAX_ANCILLARY_CHUNKS &&
+    state.ancillaryBytes <= PNG_MAX_ANCILLARY_BYTES &&
+    state.ancillaryBytes + state.decodedMetadataBytes <= PNG_MAX_TOTAL_METADATA_BYTES
+  );
+}
+
+function acceptPngIccProfile(bytes: Buffer, chunk: PngChunk, state: PngChunkState): boolean {
+  if (state.sawIccProfile || state.sawPalette || state.sawImageData) return false;
+  const profile = inflatePngIccProfile(bytes, chunk.dataOffset, chunk.dataEnd);
+  if (!profile) return false;
+  state.decodedMetadataBytes += profile.length;
+  if (state.ancillaryBytes + state.decodedMetadataBytes > PNG_MAX_TOTAL_METADATA_BYTES) return false;
+  state.sawIccProfile = true;
+  return true;
+}
+
+/** Check palette consistency, then inflate IDAT under the exact expected size and verify filters. */
+function validatePngImageData(header: PngHeader, state: PngChunkState): SafeRasterMetadata | undefined {
+  const { width, height, bitDepth, colorType, interlaceMethod } = header;
+  if (
+    state.compressedLength === 0 ||
+    (colorType === 3 && (!state.sawPalette || state.paletteEntries > 1 << bitDepth)) ||
+    ((colorType === 0 || colorType === 4) && state.sawPalette)
+  ) {
+    return undefined;
+  }
+
+  const scanlines = pngScanlineLayout(width, height, bitDepth, colorType, interlaceMethod);
+  const expectedInflatedBytes = scanlines.reduce((total, scanline) => {
+    return total + (scanline.rowBytes + 1) * scanline.rows;
+  }, 0);
+  if (
+    !Number.isSafeInteger(expectedInflatedBytes) ||
+    expectedInflatedBytes <= 0 ||
+    expectedInflatedBytes > PNG_MAX_INFLATED_BYTES
+  ) {
+    return undefined;
+  }
+  const inflated = inflateSync(Buffer.concat(state.compressedChunks, state.compressedLength), {
+    maxOutputLength: expectedInflatedBytes + 1,
+  });
+  if (inflated.length !== expectedInflatedBytes) return undefined;
+  let scanlineOffset = 0;
+  for (const scanline of scanlines) {
+    for (let row = 0; row < scanline.rows; row += 1) {
+      if (inflated[scanlineOffset] > 4) return undefined;
+      scanlineOffset += scanline.rowBytes + 1;
+    }
+  }
+  return scanlineOffset === inflated.length ? { width, height } : undefined;
 }
 
 interface PngScanlineLayout {
@@ -559,8 +605,7 @@ function isValidPngColorMode(bitDepth: number, colorType: number): boolean {
 
 function isPngChunkType(bytes: Buffer, offset: number): boolean {
   for (let index = 0; index < 4; index += 1) {
-    const value = bytes[offset + index];
-    if (!((value >= 0x41 && value <= 0x5a) || (value >= 0x61 && value <= 0x7a))) return false;
+    if (!isAsciiLetter(bytes[offset + index])) return false;
   }
   // PNG reserves the third type-code bit for future incompatible changes.
   return (bytes[offset + 2] & 0x20) === 0;
@@ -656,10 +701,13 @@ function isValidPngKeyword(bytes: Buffer, start: number, end: number): boolean {
 function isValidPngLanguageTag(bytes: Buffer, start: number, end: number): boolean {
   for (let offset = start; offset < end; offset += 1) {
     const value = bytes[offset];
-    const isAsciiLetter = (value >= 0x41 && value <= 0x5a) || (value >= 0x61 && value <= 0x7a);
-    if (!isAsciiLetter && !(value >= 0x30 && value <= 0x39) && value !== 0x2d) return false;
+    if (!isAsciiLetter(value) && !(value >= 0x30 && value <= 0x39) && value !== 0x2d) return false;
   }
   return true;
+}
+
+function isAsciiLetter(value: number): boolean {
+  return (value >= 0x41 && value <= 0x5a) || (value >= 0x61 && value <= 0x7a);
 }
 
 /** Parse JPEG marker segments and every entropy-scan boundary through EOI. */
@@ -674,76 +722,46 @@ export function validateJpegStructure(bytes: Buffer): SafeRasterMetadata | undef
       return undefined;
     }
     let offset = 2;
-    let segmentCount = 0;
-    let width = 0;
-    let height = 0;
-    let componentIds = new Set<number>();
-    let sawFrame = false;
+    let frame: JpegFrame | undefined;
     let sawScan = false;
 
-    while (offset < bytes.length) {
-      segmentCount += 1;
+    for (let segmentCount = 1; offset < bytes.length; segmentCount += 1) {
       if (segmentCount > IMAGE_MAX_CONTAINER_BLOCKS || bytes[offset] !== 0xff) return undefined;
-      while (offset < bytes.length && bytes[offset] === 0xff) offset += 1;
+      offset = skipJpegFillBytes(bytes, offset);
       if (offset >= bytes.length) return undefined;
       const marker = bytes[offset++];
       if (marker === 0x00 || marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
         return undefined;
       }
       if (marker === 0xd9) {
-        return sawFrame && sawScan && offset === bytes.length ? { width, height } : undefined;
+        return frame && sawScan && offset === bytes.length ? { width: frame.width, height: frame.height } : undefined;
       }
       if (offset + 2 > bytes.length) return undefined;
       const segmentLength = bytes.readUInt16BE(offset);
       if (segmentLength < 2 || offset + segmentLength > bytes.length) return undefined;
-      const payloadOffset = offset + 2;
-      const segmentEnd = offset + segmentLength;
+      const segment: JpegSegment = {
+        marker,
+        length: segmentLength,
+        payloadOffset: offset + 2,
+        end: offset + segmentLength,
+      };
 
-      if (isJpegStartOfFrame(marker)) {
-        if (sawFrame || (marker !== 0xc0 && marker !== 0xc1 && marker !== 0xc2) || segmentLength < 8) {
-          return undefined;
-        }
-        const precision = bytes[payloadOffset];
-        height = bytes.readUInt16BE(payloadOffset + 1);
-        width = bytes.readUInt16BE(payloadOffset + 3);
-        const components = bytes[payloadOffset + 5];
-        if (
-          precision !== 8 ||
-          (components !== 1 && components !== 3 && components !== 4) ||
-          segmentLength !== 8 + components * 3 ||
-          !isSafeStaticDimensions(width, height)
-        ) {
-          return undefined;
-        }
-        componentIds = new Set<number>();
-        for (let component = 0; component < components; component += 1) {
-          const id = bytes[payloadOffset + 6 + component * 3];
-          if (componentIds.has(id)) return undefined;
-          componentIds.add(id);
-        }
-        sawFrame = true;
-      } else if (marker === 0xda) {
-        if (!sawFrame || segmentLength < 8) return undefined;
-        const scanComponents = bytes[payloadOffset];
-        if (scanComponents < 1 || scanComponents > componentIds.size || segmentLength !== 6 + scanComponents * 2) {
-          return undefined;
-        }
-        const selectors = new Set<number>();
-        for (let component = 0; component < scanComponents; component += 1) {
-          const selector = bytes[payloadOffset + 1 + component * 2];
-          if (!componentIds.has(selector) || selectors.has(selector)) return undefined;
-          selectors.add(selector);
-        }
-        const nextMarker = findNextJpegMarker(bytes, segmentEnd);
-        if (nextMarker <= segmentEnd) return undefined;
+      // DNL/hierarchical JPEG can override the dimensions established by the frame.
+      if (marker === 0xdc || marker === 0xde || marker === 0xdf) return undefined;
+      if (marker === 0xda) {
+        if (!frame) return undefined;
+        const scanEnd = findJpegScanEnd(bytes, segment, frame.componentIds);
+        if (scanEnd === undefined) return undefined;
         sawScan = true;
-        offset = nextMarker;
+        offset = scanEnd;
         continue;
-      } else if (marker === 0xdc || marker === 0xde || marker === 0xdf) {
-        // DNL/hierarchical JPEG can override the dimensions established above.
-        return undefined;
       }
-      offset = segmentEnd;
+      if (isJpegStartOfFrame(marker)) {
+        if (frame) return undefined;
+        frame = parseJpegFrame(bytes, segment);
+        if (!frame) return undefined;
+      }
+      offset = segment.end;
     }
     return undefined;
   } catch {
@@ -751,8 +769,77 @@ export function validateJpegStructure(bytes: Buffer): SafeRasterMetadata | undef
   }
 }
 
+interface JpegSegment {
+  marker: number;
+  length: number;
+  payloadOffset: number;
+  end: number;
+}
+
+interface JpegFrame {
+  width: number;
+  height: number;
+  componentIds: ReadonlySet<number>;
+}
+
 function isJpegStartOfFrame(marker: number): boolean {
   return marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+}
+
+/** Accept only 8-bit baseline, extended-sequential or progressive Huffman frames. */
+function parseJpegFrame(bytes: Buffer, segment: JpegSegment): JpegFrame | undefined {
+  const { marker, length, payloadOffset } = segment;
+  if ((marker !== 0xc0 && marker !== 0xc1 && marker !== 0xc2) || length < 8) return undefined;
+  const precision = bytes[payloadOffset];
+  const height = bytes.readUInt16BE(payloadOffset + 1);
+  const width = bytes.readUInt16BE(payloadOffset + 3);
+  const components = bytes[payloadOffset + 5];
+  if (
+    precision !== 8 ||
+    (components !== 1 && components !== 3 && components !== 4) ||
+    length !== 8 + components * 3 ||
+    !isSafeStaticDimensions(width, height)
+  ) {
+    return undefined;
+  }
+  const componentIds = readDistinctJpegIds(bytes, payloadOffset + 6, components, 3);
+  return componentIds && { width, height, componentIds };
+}
+
+/** Validate an SOS header and return the offset of the marker that ends its entropy-coded data. */
+function findJpegScanEnd(
+  bytes: Buffer,
+  segment: JpegSegment,
+  componentIds: ReadonlySet<number>
+): number | undefined {
+  const { length, payloadOffset, end } = segment;
+  if (length < 8) return undefined;
+  const scanComponents = bytes[payloadOffset];
+  if (scanComponents < 1 || scanComponents > componentIds.size || length !== 6 + scanComponents * 2) {
+    return undefined;
+  }
+  const selectors = readDistinctJpegIds(bytes, payloadOffset + 1, scanComponents, 2);
+  if (!selectors || [...selectors].some((selector) => !componentIds.has(selector))) return undefined;
+  const nextMarker = findNextJpegMarker(bytes, end);
+  return nextMarker > end ? nextMarker : undefined;
+}
+
+/** Read one-byte identifiers spaced `stride` bytes apart, rejecting duplicates. */
+function readDistinctJpegIds(bytes: Buffer, start: number, count: number, stride: number): Set<number> | undefined {
+  const ids = new Set<number>();
+  for (let index = 0; index < count; index += 1) {
+    const id = bytes[start + index * stride];
+    if (ids.has(id)) return undefined;
+    ids.add(id);
+  }
+  return ids;
+}
+
+/** Skip the 0xFF fill bytes that may precede a marker code. */
+function skipJpegFillBytes(bytes: Buffer, startOffset: number): number {
+  let offset = startOffset;
+  while (offset < bytes.length && bytes[offset] === 0xff) offset += 1;
+  return offset;
 }
 
 function findNextJpegMarker(bytes: Buffer, startOffset: number): number {
@@ -763,9 +850,10 @@ function findNextJpegMarker(bytes: Buffer, startOffset: number): number {
       continue;
     }
     const markerOffset = offset;
-    while (offset < bytes.length && bytes[offset] === 0xff) offset += 1;
+    offset = skipJpegFillBytes(bytes, offset);
     if (offset >= bytes.length) return -1;
     const marker = bytes[offset];
+    // Stuffed zero bytes and restart markers belong to the entropy-coded data.
     if (marker === 0x00 || (marker >= 0xd0 && marker <= 0xd7)) {
       offset += 1;
       continue;
@@ -781,8 +869,7 @@ export function validateWebpStructure(bytes: Buffer): SafeRasterMetadata | undef
     if (
       bytes.length < 20 ||
       bytes.length > IMAGE_MAX_BYTES ||
-      bytes.toString("ascii", 0, 4) !== "RIFF" ||
-      bytes.toString("ascii", 8, 12) !== "WEBP" ||
+      !hasWebpSignature(bytes) ||
       bytes.readUInt32LE(4) + 8 !== bytes.length
     ) {
       return undefined;
@@ -790,79 +877,104 @@ export function validateWebpStructure(bytes: Buffer): SafeRasterMetadata | undef
 
     let offset = 12;
     let chunkCount = 0;
-    let primaryChunkIndex = 0;
-    let primaryWidth = 0;
-    let primaryHeight = 0;
-    let canvasWidth: number | undefined;
-    let canvasHeight: number | undefined;
-    let sawExtendedHeader = false;
+    let canvas: SafeRasterMetadata | undefined;
+    let primary: WebpPrimaryImage | undefined;
     let sawAlphaChunk = false;
-    let primaryType: "VP8 " | "VP8L" | undefined;
 
     while (offset < bytes.length) {
       chunkCount += 1;
-      if (chunkCount > IMAGE_MAX_CONTAINER_BLOCKS || offset + 8 > bytes.length) return undefined;
-      const chunkType = bytes.toString("ascii", offset, offset + 4);
-      if (!isPrintableFourCc(bytes, offset)) return undefined;
-      const chunkLength = bytes.readUInt32LE(offset + 4);
-      const dataOffset = offset + 8;
-      const dataEnd = dataOffset + chunkLength;
-      const paddedEnd = dataEnd + (chunkLength & 1);
-      if (dataEnd < dataOffset || paddedEnd > bytes.length) return undefined;
-      if ((chunkLength & 1) !== 0 && bytes[dataEnd] !== 0) return undefined;
+      if (chunkCount > IMAGE_MAX_CONTAINER_BLOCKS) return undefined;
+      const chunk = readWebpChunk(bytes, offset);
+      if (!chunk) return undefined;
+      offset = chunk.paddedEnd;
 
-      if (chunkType === "VP8X") {
-        if (sawExtendedHeader || chunkCount !== 1 || chunkLength !== 10) return undefined;
-        const flags = bytes[dataOffset];
-        if (
-          (flags & 0xc1) !== 0 ||
-          bytes[dataOffset + 1] !== 0 ||
-          bytes[dataOffset + 2] !== 0 ||
-          bytes[dataOffset + 3] !== 0 ||
-          (flags & 0x02) !== 0
-        ) {
-          return undefined;
-        }
-        canvasWidth = readUInt24LE(bytes, dataOffset + 4) + 1;
-        canvasHeight = readUInt24LE(bytes, dataOffset + 7) + 1;
-        if (!isSafeStaticDimensions(canvasWidth, canvasHeight)) return undefined;
-        sawExtendedHeader = true;
-      } else if (chunkType === "ANIM" || chunkType === "ANMF") {
+      if (chunk.type === "VP8X") {
+        if (canvas || chunkCount !== 1 || chunk.length !== 10) return undefined;
+        canvas = parseWebpCanvas(bytes, chunk.dataOffset);
+        if (!canvas) return undefined;
+      } else if (chunk.type === "ANIM" || chunk.type === "ANMF") {
         return undefined;
-      } else if (chunkType === "ALPH") {
+      } else if (chunk.type === "ALPH") {
         if (sawAlphaChunk) return undefined;
         sawAlphaChunk = true;
-      } else if (chunkType === "VP8 " || chunkType === "VP8L") {
-        if (primaryType !== undefined) return undefined;
-        const dimensions =
-          chunkType === "VP8 "
-            ? parseLossyWebpDimensions(bytes, dataOffset, chunkLength)
-            : parseLosslessWebpDimensions(bytes, dataOffset, chunkLength);
-        if (!dimensions || !isSafeStaticDimensions(dimensions.width, dimensions.height)) return undefined;
-        primaryType = chunkType;
-        primaryWidth = dimensions.width;
-        primaryHeight = dimensions.height;
-        primaryChunkIndex = chunkCount;
+      } else if (chunk.type === "VP8 " || chunk.type === "VP8L") {
+        if (primary) return undefined;
+        primary = parseWebpPrimaryImage(bytes, chunk.type, chunk, chunkCount);
+        if (!primary) return undefined;
       }
-      offset = paddedEnd;
     }
 
-    if (offset !== bytes.length || primaryType === undefined) return undefined;
-    if (!sawExtendedHeader) {
-      if (chunkCount !== 1 || primaryChunkIndex !== 1 || sawAlphaChunk) return undefined;
-      return { width: primaryWidth, height: primaryHeight };
+    if (offset !== bytes.length || !primary) return undefined;
+    if (!canvas) {
+      if (chunkCount !== 1 || primary.chunkIndex !== 1 || sawAlphaChunk) return undefined;
+      return { width: primary.width, height: primary.height };
     }
     if (
-      canvasWidth !== primaryWidth ||
-      canvasHeight !== primaryHeight ||
-      (sawAlphaChunk && primaryType !== "VP8 ")
+      canvas.width !== primary.width ||
+      canvas.height !== primary.height ||
+      (sawAlphaChunk && primary.type !== "VP8 ")
     ) {
       return undefined;
     }
-    return { width: canvasWidth, height: canvasHeight };
+    return { width: canvas.width, height: canvas.height };
   } catch {
     return undefined;
   }
+}
+
+interface WebpChunk {
+  type: string;
+  length: number;
+  dataOffset: number;
+  paddedEnd: number;
+}
+
+interface WebpPrimaryImage extends SafeRasterMetadata {
+  type: "VP8 " | "VP8L";
+  chunkIndex: number;
+}
+
+/** Frame one RIFF chunk, including the zero pad byte required after odd-length data. */
+function readWebpChunk(bytes: Buffer, offset: number): WebpChunk | undefined {
+  if (offset + 8 > bytes.length || !isPrintableFourCc(bytes, offset)) return undefined;
+  const length = bytes.readUInt32LE(offset + 4);
+  const dataOffset = offset + 8;
+  const dataEnd = dataOffset + length;
+  const paddedEnd = dataEnd + (length & 1);
+  if (dataEnd < dataOffset || paddedEnd > bytes.length) return undefined;
+  if ((length & 1) !== 0 && bytes[dataEnd] !== 0) return undefined;
+  return { type: bytes.toString("ascii", offset, offset + 4), length, dataOffset, paddedEnd };
+}
+
+/** VP8X canvas; reserved bits must be clear and the animation flag (0x02) is not accepted. */
+function parseWebpCanvas(bytes: Buffer, dataOffset: number): SafeRasterMetadata | undefined {
+  const flags = bytes[dataOffset];
+  if (
+    (flags & 0xc1) !== 0 ||
+    bytes[dataOffset + 1] !== 0 ||
+    bytes[dataOffset + 2] !== 0 ||
+    bytes[dataOffset + 3] !== 0 ||
+    (flags & 0x02) !== 0
+  ) {
+    return undefined;
+  }
+  const width = readUInt24LE(bytes, dataOffset + 4) + 1;
+  const height = readUInt24LE(bytes, dataOffset + 7) + 1;
+  return isSafeStaticDimensions(width, height) ? { width, height } : undefined;
+}
+
+function parseWebpPrimaryImage(
+  bytes: Buffer,
+  type: WebpPrimaryImage["type"],
+  chunk: WebpChunk,
+  chunkIndex: number
+): WebpPrimaryImage | undefined {
+  const dimensions =
+    type === "VP8 "
+      ? parseLossyWebpDimensions(bytes, chunk.dataOffset, chunk.length)
+      : parseLosslessWebpDimensions(bytes, chunk.dataOffset, chunk.length);
+  if (!dimensions || !isSafeStaticDimensions(dimensions.width, dimensions.height)) return undefined;
+  return { ...dimensions, type, chunkIndex };
 }
 
 function parseLossyWebpDimensions(
@@ -871,7 +983,7 @@ function parseLossyWebpDimensions(
   length: number
 ): SafeRasterMetadata | undefined {
   if (length < 10) return undefined;
-  const frameTag = bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16);
+  const frameTag = readUInt24LE(bytes, offset);
   const firstPartitionLength = frameTag >>> 5;
   if (
     (frameTag & 1) !== 0 ||
@@ -941,6 +1053,26 @@ interface GifSubBlocks {
   byteLength: number;
 }
 
+/** Graphics-control values waiting for the next image descriptor. */
+interface GifGraphicsControl {
+  delayMs: number;
+  transparentIndex?: number;
+}
+
+interface GifParseState {
+  readonly bytes: Buffer;
+  readonly width: number;
+  readonly height: number;
+  readonly globalColorCount: number;
+  offset: number;
+  blockCount: number;
+  frames: GifFrameRecord[];
+  totalFramePixels: number;
+  durationMs: number;
+  pendingControl?: GifGraphicsControl;
+  loopCount?: number;
+}
+
 /**
  * Parse and validate a GIF before it reaches a browser or document decoder.
  *
@@ -951,210 +1083,204 @@ interface GifSubBlocks {
  */
 export function validateGifStructure(bytes: Buffer): SafeGifMetadata | undefined {
   try {
-    if (bytes.length < 14 || bytes.length > IMAGE_MAX_BYTES) return undefined;
-    const signature = bytes.subarray(0, 6).toString("ascii");
-    if (signature !== "GIF87a" && signature !== "GIF89a") return undefined;
+    const state = readGifHeader(bytes);
+    if (!state) return undefined;
 
-    const width = bytes.readUInt16LE(6);
-    const height = bytes.readUInt16LE(8);
-    if (
-      width === 0 ||
-      height === 0 ||
-      width > GIF_MAX_DIMENSION ||
-      height > GIF_MAX_DIMENSION ||
-      width * height > GIF_MAX_CANVAS_PIXELS
-    ) {
-      return undefined;
-    }
-
-    const logicalPacked = bytes[10];
-    const hasGlobalColorTable = (logicalPacked & 0x80) !== 0;
-    const globalColorCount = hasGlobalColorTable ? 1 << ((logicalPacked & 0x07) + 1) : 0;
-    if (hasGlobalColorTable && bytes[11] >= globalColorCount) return undefined;
-
-    let offset = 13;
-    if (hasGlobalColorTable) {
-      offset = skipGifBytes(bytes, offset, globalColorCount * 3);
-      if (offset < 0) return undefined;
-    }
-
-    const frames: GifFrameRecord[] = [];
-    let totalFramePixels = 0;
-    let durationMs = 0;
-    let blockCount = 0;
-    let pendingDelayMs: number | undefined;
-    let pendingTransparentIndex: number | undefined;
-    let loopCount: number | undefined;
-    let sawTrailer = false;
-
-    while (offset < bytes.length) {
-      blockCount += 1;
-      if (blockCount > IMAGE_MAX_CONTAINER_BLOCKS) return undefined;
-      const marker = bytes[offset++];
-
+    while (state.offset < bytes.length) {
+      state.blockCount += 1;
+      if (state.blockCount > IMAGE_MAX_CONTAINER_BLOCKS) return undefined;
+      const marker = bytes[state.offset++];
       if (marker === 0x3b) {
         // Reject both a dangling graphics-control extension and appended data.
-        if (pendingDelayMs !== undefined || offset !== bytes.length) return undefined;
-        sawTrailer = true;
-        break;
+        if (state.pendingControl || state.offset !== bytes.length) return undefined;
+        return finishGif(state);
       }
-
-      if (marker === 0x21) {
-        if (offset >= bytes.length) return undefined;
-        const label = bytes[offset++];
-
-        if (label === 0xf9) {
-          if (pendingDelayMs !== undefined || offset + 6 > bytes.length) return undefined;
-          if (bytes[offset] !== 4 || bytes[offset + 5] !== 0) return undefined;
-          const packed = bytes[offset + 1];
-          const disposalMethod = (packed >> 2) & 0x07;
-          // Reserved bits, user-input waiting, and reserved disposal modes are
-          // intentionally unsupported because they create ambiguous playback.
-          if ((packed & 0xe0) !== 0 || (packed & 0x02) !== 0 || disposalMethod > 3) return undefined;
-          const delayCentiseconds = bytes.readUInt16LE(offset + 2);
-          pendingDelayMs = delayCentiseconds * 10;
-          pendingTransparentIndex = (packed & 0x01) !== 0 ? bytes[offset + 4] : undefined;
-          offset += 6;
-          continue;
-        }
-
-        if (label === 0xff) {
-          // Application extension: exactly 11 bytes of identifier/auth data,
-          // followed by ordinary data sub-blocks (e.g. NETSCAPE loop metadata).
-          if (offset >= bytes.length || bytes[offset] !== 11) return undefined;
-          const applicationId = bytes.subarray(offset + 1, offset + 12).toString("ascii");
-          offset = skipGifBytes(bytes, offset + 1, 11);
-          if (offset < 0) return undefined;
-          const extension = readGifSubBlocks(bytes, offset);
-          if (!extension) return undefined;
-          blockCount += extension.blockCount;
-          if (blockCount > IMAGE_MAX_CONTAINER_BLOCKS) return undefined;
-          offset = extension.nextOffset;
-          if (applicationId === "NETSCAPE2.0" || applicationId === "ANIMEXTS1.0") {
-            if (frames.length > 0 || loopCount !== undefined) return undefined;
-            if (
-              extension.chunks.length !== 1 ||
-              extension.chunks[0].length !== 3 ||
-              extension.chunks[0][0] !== 1
-            ) {
-              return undefined;
-            }
-            loopCount = extension.chunks[0].readUInt16LE(1);
-            // A zero loop count means unbounded playback in both extensions.
-            if (loopCount === 0) return undefined;
-          }
-          continue;
-        }
-
-        if (label === 0xfe) {
-          const comment = readGifSubBlocks(bytes, offset);
-          if (!comment) return undefined;
-          blockCount += comment.blockCount;
-          if (blockCount > IMAGE_MAX_CONTAINER_BLOCKS) return undefined;
-          offset = comment.nextOffset;
-          continue;
-        }
-
-        // Plain-text and unknown extensions expand the decoder surface without
-        // helping article media, so reject them rather than interpreting them.
-        return undefined;
-      }
-
-      if (marker !== 0x2c || offset + 9 > bytes.length) return undefined;
-      const left = bytes.readUInt16LE(offset);
-      const top = bytes.readUInt16LE(offset + 2);
-      const frameWidth = bytes.readUInt16LE(offset + 4);
-      const frameHeight = bytes.readUInt16LE(offset + 6);
-      const imagePacked = bytes[offset + 8];
-      offset += 9;
-
-      if (
-        frameWidth === 0 ||
-        frameHeight === 0 ||
-        left + frameWidth > width ||
-        top + frameHeight > height ||
-        (imagePacked & 0x18) !== 0
-      ) {
-        return undefined;
-      }
-
-      const hasLocalColorTable = (imagePacked & 0x80) !== 0;
-      const localColorCount = hasLocalColorTable ? 1 << ((imagePacked & 0x07) + 1) : 0;
-      if (hasLocalColorTable) {
-        offset = skipGifBytes(bytes, offset, localColorCount * 3);
-        if (offset < 0) return undefined;
-      }
-      const colorCount = localColorCount || globalColorCount;
-      if (colorCount === 0) return undefined;
-      if (pendingTransparentIndex !== undefined && pendingTransparentIndex >= colorCount) return undefined;
-
-      if (offset >= bytes.length) return undefined;
-      const minimumCodeSize = bytes[offset++];
-      if (minimumCodeSize < 2 || minimumCodeSize > 8) return undefined;
-      const imageData = readGifSubBlocks(bytes, offset);
-      if (!imageData || imageData.byteLength === 0) return undefined;
-      blockCount += imageData.blockCount;
-      if (blockCount > IMAGE_MAX_CONTAINER_BLOCKS) return undefined;
-      offset = imageData.nextOffset;
-
-      const framePixels = frameWidth * frameHeight;
-      totalFramePixels += framePixels;
-      const nextFrameCount = frames.length + 1;
-      if (
-        nextFrameCount > GIF_MAX_FRAMES ||
-        width * height * nextFrameCount > GIF_MAX_COMPOSITED_PIXELS
-      ) {
-        return undefined;
-      }
-      durationMs += Math.max(pendingDelayMs ?? 0, GIF_MIN_FRAME_DURATION_MS);
-      if (durationMs > GIF_MAX_DURATION_MS) return undefined;
-
-      frames.push({
-        width: frameWidth,
-        height: frameHeight,
-        colorCount,
-        minimumCodeSize,
-        compressed: Buffer.concat(imageData.chunks, imageData.byteLength),
-      });
-      pendingDelayMs = undefined;
-      pendingTransparentIndex = undefined;
+      const accepted = marker === 0x21 ? readGifExtension(state) : marker === 0x2c && readGifImage(state);
+      if (!accepted) return undefined;
     }
-
-    if (!sawTrailer || frames.length === 0) return undefined;
-    for (const frame of frames) {
-      if (
-        !validateGifLzw(
-          frame.compressed,
-          frame.minimumCodeSize,
-          frame.width * frame.height,
-          frame.colorCount
-        )
-      ) {
-        return undefined;
-      }
-    }
-
-    // Netscape's finite loop value is the number of repeats after the first
-    // play. Charge every play against bounded wall-clock and decode budgets.
-    const totalPlays = loopCount === undefined ? 1 : loopCount + 1;
-    const compositedPixels = width * height * frames.length;
-    if (
-      durationMs * totalPlays > GIF_MAX_TOTAL_PLAYBACK_DURATION_MS ||
-      compositedPixels * totalPlays > GIF_MAX_TOTAL_PLAYBACK_COMPOSITED_PIXELS
-    ) {
-      return undefined;
-    }
-
-    return { width, height, frameCount: frames.length, totalFramePixels, durationMs };
+    return undefined;
   } catch {
-    // Bounds checks above should make parser exceptions rare; malformed binary
-    // input is still treated as an ordinary rejected image, never a hard error.
+    // Every reader bounds-checks first, so parser exceptions should be rare;
+    // malformed binary input is still an ordinary rejected image, never a hard error.
     return undefined;
   }
 }
 
+/** Header and logical screen descriptor, then the optional global color table. */
+function readGifHeader(bytes: Buffer): GifParseState | undefined {
+  if (bytes.length < 14 || bytes.length > IMAGE_MAX_BYTES || !hasGifSignature(bytes)) return undefined;
+  const width = bytes.readUInt16LE(6);
+  const height = bytes.readUInt16LE(8);
+  if (
+    width === 0 ||
+    height === 0 ||
+    width > GIF_MAX_DIMENSION ||
+    height > GIF_MAX_DIMENSION ||
+    width * height > GIF_MAX_CANVAS_PIXELS
+  ) {
+    return undefined;
+  }
+
+  const globalColorCount = gifColorTableSize(bytes[10]);
+  // The background color index must point into the global table.
+  if (globalColorCount > 0 && bytes[11] >= globalColorCount) return undefined;
+  const offset = skipGifBytes(bytes, 13, globalColorCount * 3);
+  if (offset < 0) return undefined;
+  return {
+    bytes,
+    width,
+    height,
+    globalColorCount,
+    offset,
+    blockCount: 0,
+    frames: [],
+    totalFramePixels: 0,
+    durationMs: 0,
+  };
+}
+
+/** Entries in the color table announced by a packed field; 0 when the table is absent. */
+function gifColorTableSize(packed: number): number {
+  return (packed & 0x80) !== 0 ? 1 << ((packed & 0x07) + 1) : 0;
+}
+
+function readGifExtension(state: GifParseState): boolean {
+  if (state.offset >= state.bytes.length) return false;
+  const label = state.bytes[state.offset++];
+  if (label === 0xf9) return readGifGraphicsControl(state);
+  if (label === 0xff) return readGifApplicationExtension(state);
+  if (label === 0xfe) return consumeGifSubBlocks(state) !== undefined;
+  // Plain-text and unknown extensions expand the decoder surface without
+  // helping article media, so reject them rather than interpreting them.
+  return false;
+}
+
+function readGifGraphicsControl(state: GifParseState): boolean {
+  const { bytes, offset } = state;
+  if (state.pendingControl || offset + 6 > bytes.length) return false;
+  if (bytes[offset] !== 4 || bytes[offset + 5] !== 0) return false;
+  const packed = bytes[offset + 1];
+  const disposalMethod = (packed >> 2) & 0x07;
+  // Reserved bits, user-input waiting, and reserved disposal modes are
+  // intentionally unsupported because they create ambiguous playback.
+  if ((packed & 0xe0) !== 0 || (packed & 0x02) !== 0 || disposalMethod > 3) return false;
+  state.pendingControl = {
+    delayMs: bytes.readUInt16LE(offset + 2) * 10,
+    transparentIndex: (packed & 0x01) !== 0 ? bytes[offset + 4] : undefined,
+  };
+  state.offset = offset + 6;
+  return true;
+}
+
+/**
+ * Application extension: exactly 11 bytes of identifier/auth data, followed
+ * by ordinary data sub-blocks (e.g. NETSCAPE loop metadata).
+ */
+function readGifApplicationExtension(state: GifParseState): boolean {
+  const { bytes, offset } = state;
+  if (offset >= bytes.length || bytes[offset] !== 11) return false;
+  const applicationId = bytes.subarray(offset + 1, offset + 12).toString("ascii");
+  const dataOffset = skipGifBytes(bytes, offset + 1, 11);
+  if (dataOffset < 0) return false;
+  state.offset = dataOffset;
+  const extension = consumeGifSubBlocks(state);
+  if (!extension) return false;
+  if (applicationId !== "NETSCAPE2.0" && applicationId !== "ANIMEXTS1.0") return true;
+
+  if (state.frames.length > 0 || state.loopCount !== undefined) return false;
+  const [loopBlock] = extension.chunks;
+  if (extension.chunks.length !== 1 || loopBlock.length !== 3 || loopBlock[0] !== 1) return false;
+  state.loopCount = loopBlock.readUInt16LE(1);
+  // A zero loop count means unbounded playback in both extensions.
+  return state.loopCount !== 0;
+}
+
+/** Image descriptor, optional local color table and LZW data, charged against the animation budgets. */
+function readGifImage(state: GifParseState): boolean {
+  const { bytes, width, height } = state;
+  if (state.offset + 9 > bytes.length) return false;
+  const left = bytes.readUInt16LE(state.offset);
+  const top = bytes.readUInt16LE(state.offset + 2);
+  const frameWidth = bytes.readUInt16LE(state.offset + 4);
+  const frameHeight = bytes.readUInt16LE(state.offset + 6);
+  const imagePacked = bytes[state.offset + 8];
+  if (
+    frameWidth === 0 ||
+    frameHeight === 0 ||
+    left + frameWidth > width ||
+    top + frameHeight > height ||
+    (imagePacked & 0x18) !== 0
+  ) {
+    return false;
+  }
+
+  const localColorCount = gifColorTableSize(imagePacked);
+  const dataOffset = skipGifBytes(bytes, state.offset + 9, localColorCount * 3);
+  if (dataOffset < 0) return false;
+  const colorCount = localColorCount || state.globalColorCount;
+  if (colorCount === 0) return false;
+  const transparentIndex = state.pendingControl?.transparentIndex;
+  if (transparentIndex !== undefined && transparentIndex >= colorCount) return false;
+
+  if (dataOffset >= bytes.length) return false;
+  const minimumCodeSize = bytes[dataOffset];
+  if (minimumCodeSize < 2 || minimumCodeSize > 8) return false;
+  state.offset = dataOffset + 1;
+  const imageData = consumeGifSubBlocks(state);
+  if (!imageData || imageData.byteLength === 0) return false;
+
+  state.totalFramePixels += frameWidth * frameHeight;
+  const nextFrameCount = state.frames.length + 1;
+  if (nextFrameCount > GIF_MAX_FRAMES || width * height * nextFrameCount > GIF_MAX_COMPOSITED_PIXELS) return false;
+  state.durationMs += Math.max(state.pendingControl?.delayMs ?? 0, GIF_MIN_FRAME_DURATION_MS);
+  if (state.durationMs > GIF_MAX_DURATION_MS) return false;
+
+  state.frames.push({
+    width: frameWidth,
+    height: frameHeight,
+    colorCount,
+    minimumCodeSize,
+    compressed: Buffer.concat(imageData.chunks, imageData.byteLength),
+  });
+  state.pendingControl = undefined;
+  return true;
+}
+
+/** After the trailer: check every frame's LZW stream, then the whole-playback budgets. */
+function finishGif(state: GifParseState): SafeGifMetadata | undefined {
+  const { width, height, frames, durationMs, loopCount } = state;
+  if (frames.length === 0) return undefined;
+  const framesDecode = frames.every((frame) =>
+    validateGifLzw(frame.compressed, frame.minimumCodeSize, frame.width * frame.height, frame.colorCount)
+  );
+  if (!framesDecode) return undefined;
+
+  // Netscape's finite loop value is the number of repeats after the first
+  // play. Charge every play against bounded wall-clock and decode budgets.
+  const totalPlays = loopCount === undefined ? 1 : loopCount + 1;
+  const compositedPixels = width * height * frames.length;
+  if (
+    durationMs * totalPlays > GIF_MAX_TOTAL_PLAYBACK_DURATION_MS ||
+    compositedPixels * totalPlays > GIF_MAX_TOTAL_PLAYBACK_COMPOSITED_PIXELS
+  ) {
+    return undefined;
+  }
+
+  return { width, height, frameCount: frames.length, totalFramePixels: state.totalFramePixels, durationMs };
+}
+
 function skipGifBytes(bytes: Buffer, offset: number, count: number): number {
   return offset >= 0 && count >= 0 && offset + count <= bytes.length ? offset + count : -1;
+}
+
+/** Read a sub-block chain at the cursor and charge its blocks to the container budget. */
+function consumeGifSubBlocks(state: GifParseState): GifSubBlocks | undefined {
+  const blocks = readGifSubBlocks(state.bytes, state.offset);
+  if (!blocks) return undefined;
+  state.blockCount += blocks.blockCount;
+  if (state.blockCount > IMAGE_MAX_CONTAINER_BLOCKS) return undefined;
+  state.offset = blocks.nextOffset;
+  return blocks;
 }
 
 /** Read a GIF data-sub-block chain, including its mandatory zero terminator. */
@@ -1177,6 +1303,14 @@ function readGifSubBlocks(bytes: Buffer, startOffset: number): GifSubBlocks | un
   return undefined;
 }
 
+/** LZW dictionary that tracks only each code's expansion length and first palette index. */
+interface GifLzwTable {
+  expansionLength: Uint32Array;
+  firstColor: Uint16Array;
+  nextCode: number;
+  codeSize: number;
+}
+
 /**
  * Validate one frame's GIF LZW stream without allocating its decoded pixels.
  * Dictionary entries track only expansion length and first palette index.
@@ -1189,74 +1323,93 @@ function validateGifLzw(
 ): boolean {
   const clearCode = 1 << minimumCodeSize;
   const endCode = clearCode + 1;
-  const expansionLength = new Uint32Array(4_096);
-  const firstColor = new Uint16Array(4_096);
-  for (let code = 0; code < clearCode; code += 1) {
-    expansionLength[code] = 1;
-    firstColor[code] = code;
-  }
-
-  let codeSize = minimumCodeSize + 1;
-  let nextCode = endCode + 1;
+  const table = createGifLzwTable(minimumCodeSize);
   let previousCode = -1;
   let decodedPixels = 0;
   let bitOffset = 0;
   let codeCount = 0;
   let sawClear = false;
-  let sawEnd = false;
 
-  while (bitOffset + codeSize <= data.length * 8) {
+  while (bitOffset + table.codeSize <= data.length * 8) {
     codeCount += 1;
     if (codeCount > GIF_MAX_LZW_CODES) return false;
-    const code = readGifCode(data, bitOffset, codeSize);
+    const code = readGifCode(data, bitOffset, table.codeSize);
     if (code === undefined) return false;
-    bitOffset += codeSize;
+    bitOffset += table.codeSize;
 
     if (code === clearCode) {
-      codeSize = minimumCodeSize + 1;
-      nextCode = endCode + 1;
+      resetGifLzwTable(table, minimumCodeSize);
       previousCode = -1;
       sawClear = true;
       continue;
     }
     if (!sawClear) return false;
-    if (code === endCode) {
-      sawEnd = true;
-      break;
-    }
+    if (code === endCode) return decodedPixels === expectedPixels && hasOnlyGifZeroPadding(data, bitOffset);
 
     if (previousCode < 0) {
       if (code >= clearCode || code >= colorCount) return false;
       decodedPixels += 1;
-      previousCode = code;
-      continue;
-    }
-
-    let currentLength = 0;
-    if (code < nextCode && expansionLength[code] > 0) {
-      currentLength = expansionLength[code];
-      if (firstColor[code] >= colorCount) return false;
-    } else if (code === nextCode && expansionLength[previousCode] > 0) {
-      currentLength = expansionLength[previousCode] + 1;
     } else {
-      return false;
-    }
-
-    decodedPixels += currentLength;
-    if (decodedPixels > expectedPixels) return false;
-
-    if (nextCode < 4_096) {
-      const previousLength = expansionLength[previousCode];
-      if (previousLength === 0 || previousLength >= expectedPixels) return false;
-      expansionLength[nextCode] = previousLength + 1;
-      firstColor[nextCode] = firstColor[previousCode];
-      nextCode += 1;
-      if (nextCode === 1 << codeSize && codeSize < 12) codeSize += 1;
+      const currentLength = gifLzwExpansionLength(table, code, previousCode, colorCount);
+      if (currentLength === undefined) return false;
+      decodedPixels += currentLength;
+      if (decodedPixels > expectedPixels) return false;
+      if (!addGifLzwEntry(table, previousCode, expectedPixels)) return false;
     }
     previousCode = code;
   }
+  return false;
+}
 
-  if (!sawEnd || decodedPixels !== expectedPixels) return false;
+function createGifLzwTable(minimumCodeSize: number): GifLzwTable {
+  const table: GifLzwTable = {
+    expansionLength: new Uint32Array(4_096),
+    firstColor: new Uint16Array(4_096),
+    nextCode: 0,
+    codeSize: 0,
+  };
+  for (let code = 0; code < 1 << minimumCodeSize; code += 1) {
+    table.expansionLength[code] = 1;
+    table.firstColor[code] = code;
+  }
+  resetGifLzwTable(table, minimumCodeSize);
+  return table;
+}
+
+function resetGifLzwTable(table: GifLzwTable, minimumCodeSize: number): void {
+  table.codeSize = minimumCodeSize + 1;
+  // The first free code follows the clear and end codes.
+  table.nextCode = (1 << minimumCodeSize) + 2;
+}
+
+/** Expansion length of `code`, including the KwKwK case where it is the entry being defined. */
+function gifLzwExpansionLength(
+  table: GifLzwTable,
+  code: number,
+  previousCode: number,
+  colorCount: number
+): number | undefined {
+  if (code < table.nextCode && table.expansionLength[code] > 0) {
+    return table.firstColor[code] < colorCount ? table.expansionLength[code] : undefined;
+  }
+  if (code === table.nextCode && table.expansionLength[previousCode] > 0) {
+    return table.expansionLength[previousCode] + 1;
+  }
+  return undefined;
+}
+
+function addGifLzwEntry(table: GifLzwTable, previousCode: number, expectedPixels: number): boolean {
+  if (table.nextCode >= 4_096) return true;
+  const previousLength = table.expansionLength[previousCode];
+  if (previousLength === 0 || previousLength >= expectedPixels) return false;
+  table.expansionLength[table.nextCode] = previousLength + 1;
+  table.firstColor[table.nextCode] = table.firstColor[previousCode];
+  table.nextCode += 1;
+  if (table.nextCode === 1 << table.codeSize && table.codeSize < 12) table.codeSize += 1;
+  return true;
+}
+
+function hasOnlyGifZeroPadding(data: Buffer, bitOffset: number): boolean {
   const paddingBits = data.length * 8 - bitOffset;
   // FFmpeg's GIF encoder can flush one whole zero byte after the end code.
   // Accept that bounded, inert padding while still rejecting hidden codes or
@@ -1320,16 +1473,7 @@ export function extractSourceImageCandidatesFromHtml(html: string, pageUrl: stri
   // Rotate source families so dozens of stale OG tags cannot consume every
   // bounded validation attempt before JSON-LD or the real article body.
   const ordered = interleaveSourceImageUrlGroups(resolvedGroups);
-
-  const resolved: string[] = [];
-  const seen = new Set<string>();
-  for (const imageUrl of ordered) {
-    if (resolved.length >= SOURCE_IMAGE_MAX_CANDIDATES) break;
-    if (seen.has(imageUrl)) continue;
-    seen.add(imageUrl);
-    resolved.push(imageUrl);
-  }
-  return resolved;
+  return [...new Set(ordered)].slice(0, SOURCE_IMAGE_MAX_CANDIDATES);
 }
 
 /**
@@ -1539,50 +1683,45 @@ function collectJsonLdImageCandidates(html: string): SourceImageCandidateHint[] 
     }
     const source = stripJsonLdWrappers(match[2] || "");
     if (!source || source.length > SOURCE_PAGE_MAX_BYTES) continue;
+    // Invalid JSON yields undefined, which the walk below ignores.
+    collectJsonLdTreeImageCandidates(tryParseJson(source), candidates);
+  }
+  return candidates;
+}
 
-    let root: unknown;
-    try {
-      root = JSON.parse(source) as unknown;
-    } catch {
+/** Breadth-first walk of one JSON-LD document, bounded in node count and depth. */
+function collectJsonLdTreeImageCandidates(root: unknown, candidates: SourceImageCandidateHint[]): void {
+  const queue: Array<{ value: unknown; depth: number }> = [{ value: root, depth: 0 }];
+  let visited = 0;
+  while (queue.length > 0 && visited < SOURCE_IMAGE_JSON_LD_MAX_NODES) {
+    const entry = queue.shift();
+    if (!entry || entry.depth > SOURCE_IMAGE_JSON_LD_MAX_DEPTH) continue;
+    visited += 1;
+
+    const { value } = entry;
+    let children: unknown[];
+    if (Array.isArray(value)) {
+      children = value.slice(0, SOURCE_IMAGE_MAX_CANDIDATES);
+    } else if (isRecord(value)) {
+      const typeNames = jsonLdTypeNames(value["@type"]);
+      if (typeNames.some(isJsonLdArticleType)) {
+        collectJsonLdImageValue(value.image, candidates, "JSON-LD Article.image");
+        collectJsonLdImageValue(value.thumbnailUrl, candidates, "JSON-LD Article.thumbnailUrl");
+      }
+      if (typeNames.includes("imageobject")) collectJsonLdImageObject(value, candidates, "JSON-LD ImageObject");
+      // Only nested objects and arrays can hold further typed nodes.
+      children = Object.values(value)
+        .slice(0, SOURCE_IMAGE_MAX_CANDIDATES)
+        .filter((child) => child !== null && typeof child === "object");
+    } else {
       continue;
     }
 
-    const queue: Array<{ value: unknown; depth: number }> = [{ value: root, depth: 0 }];
-    let visited = 0;
-    while (queue.length > 0 && visited < SOURCE_IMAGE_JSON_LD_MAX_NODES) {
-      const entry = queue.shift();
-      if (!entry || entry.depth > SOURCE_IMAGE_JSON_LD_MAX_DEPTH) continue;
-      visited += 1;
-
-      if (Array.isArray(entry.value)) {
-        for (const child of entry.value.slice(0, SOURCE_IMAGE_MAX_CANDIDATES)) {
-          if (queue.length >= SOURCE_IMAGE_JSON_LD_MAX_NODES) break;
-          queue.push({ value: child, depth: entry.depth + 1 });
-        }
-        continue;
-      }
-      if (!isRecord(entry.value)) continue;
-
-      const typeNames = jsonLdTypeNames(entry.value["@type"]);
-      const isArticle = typeNames.some((typeName) => isJsonLdArticleType(typeName));
-      const isImageObject = typeNames.some((typeName) => typeName === "imageobject");
-      if (isArticle) {
-        collectJsonLdImageValue(entry.value.image, candidates, "JSON-LD Article.image");
-        collectJsonLdImageValue(entry.value.thumbnailUrl, candidates, "JSON-LD Article.thumbnailUrl");
-      }
-      if (isImageObject) {
-        collectJsonLdImageObject(entry.value, candidates, "JSON-LD ImageObject");
-      }
-
-      for (const child of Object.values(entry.value).slice(0, SOURCE_IMAGE_MAX_CANDIDATES)) {
-        if (queue.length >= SOURCE_IMAGE_JSON_LD_MAX_NODES) break;
-        if (child !== null && typeof child === "object") {
-          queue.push({ value: child, depth: entry.depth + 1 });
-        }
-      }
+    for (const child of children) {
+      if (queue.length >= SOURCE_IMAGE_JSON_LD_MAX_NODES) break;
+      queue.push({ value: child, depth: entry.depth + 1 });
     }
   }
-  return candidates;
 }
 
 function collectJsonLdImageValue(
@@ -1626,26 +1765,19 @@ function collectJsonLdImageObject(
   ].filter(Boolean).join(" ");
   for (const key of ["contentUrl", "url", "thumbnailUrl"] as const) {
     const value = record[key];
-    if (typeof value === "string") {
-      pushSourceImageHint(candidates, {
-        rawUrl: value,
-        width,
-        height,
-        context: descriptiveContext,
-      });
-    } else if (Array.isArray(value)) {
-      for (const rawUrl of value) {
-        if (typeof rawUrl === "string") {
-          pushSourceImageHint(candidates, {
-            rawUrl,
-            width,
-            height,
-            context: descriptiveContext,
-          });
-        }
-      }
+    for (const rawUrl of Array.isArray(value) ? value : [value]) {
+      if (typeof rawUrl !== "string") continue;
+      pushSourceImageHint(candidates, { rawUrl, width, height, context: descriptiveContext });
     }
   }
+}
+
+/** Context hints of the currently open containers, innermost last. */
+interface ArticleContainerHints {
+  article: Array<string | undefined>;
+  figure: Array<string | undefined>;
+  /** `undefined` marks an open div without strong article-body signals. */
+  div: Array<string | undefined>;
 }
 
 function collectArticleImageCandidates(html: string): SourceImageCandidateHint[] {
@@ -1656,55 +1788,44 @@ function collectArticleImageCandidates(html: string): SourceImageCandidateHint[]
     ""
   );
   const tokenPattern = /<\s*(\/?)\s*(article|figure|main|div)\b([^>]{0,8192})>|<\s*img\b([^>]{0,8192})>/gi;
-  const articleHints: string[] = [];
-  const figureHints: string[] = [];
-  const divHints: Array<string | undefined> = [];
+  const hints: ArticleContainerHints = { article: [], figure: [], div: [] };
   let match: RegExpExecArray | null;
 
   while ((match = tokenPattern.exec(searchableHtml)) !== null) {
     const containerName = match[2]?.toLowerCase();
     if (containerName) {
-      if (containerName === "div") {
-        if (match[1]) {
-          divHints.pop();
-        } else {
-          const attributes = parseHtmlAttributes(match[3] || "");
-          divHints.push(
-            isLikelyArticleContentContainer(attributes)
-              ? imageContextFromAttributes(attributes)
-              : undefined
-          );
-          if (/\/\s*>$/.test(match[0])) divHints.pop();
-        }
-        continue;
-      }
-
-      const stack = containerName === "figure" ? figureHints : articleHints;
-      if (match[1]) {
-        stack.pop();
-      } else {
-        const attributes = parseHtmlAttributes(match[3] || "");
-        stack.push(imageContextFromAttributes(attributes));
-        if (/\/\s*>$/.test(match[0])) stack.pop();
-      }
+      trackArticleContainer(hints, containerName, match);
       continue;
     }
-    const activeDivHints = divHints.filter((hint): hint is string => hint !== undefined);
-    if (figureHints.length === 0 && articleHints.length === 0 && activeDivHints.length === 0) {
+    const activeDivHints = hints.div.filter((hint): hint is string => hint !== undefined);
+    if (hints.figure.length === 0 && hints.article.length === 0 && activeDivHints.length === 0) {
       continue;
     }
 
     const attributes = parseHtmlAttributes(match[4] || "");
     const context = [
-      ...articleHints.slice(-2),
+      ...hints.article.slice(-2),
       ...activeDivHints.slice(-2),
-      ...figureHints.slice(-2),
+      ...hints.figure.slice(-2),
       imageContextFromAttributes(attributes),
     ].filter(Boolean).join(" ");
-    const target = figureHints.length > 0 ? figureCandidates : articleCandidates;
+    const target = hints.figure.length > 0 ? figureCandidates : articleCandidates;
     collectImageElementCandidates(attributes, context, target);
   }
   return [...figureCandidates, ...articleCandidates];
+}
+
+/** Push or pop one container tag; a self-closing tag is pushed and popped at once. */
+function trackArticleContainer(hints: ArticleContainerHints, containerName: string, tag: RegExpExecArray): void {
+  const stack = containerName === "div" ? hints.div : containerName === "figure" ? hints.figure : hints.article;
+  if (tag[1]) {
+    stack.pop();
+    return;
+  }
+  const attributes = parseHtmlAttributes(tag[3] || "");
+  const carriesContext = containerName !== "div" || isLikelyArticleContentContainer(attributes);
+  stack.push(carriesContext ? imageContextFromAttributes(attributes) : undefined);
+  if (/\/\s*>$/.test(tag[0])) stack.pop();
 }
 
 /**
@@ -1740,46 +1861,17 @@ function collectImageElementCandidates(
 ): void {
   const width = parseImageDimension(attributes.width);
   const height = parseImageDimension(attributes.height);
+  const push = (rawUrl: string, sourceWidth?: number) =>
+    pushSourceImageHint(candidates, { rawUrl, width: sourceWidth ?? width, height, context });
+
   for (const attributeName of ["data-srcset", "data-lazy-srcset"] as const) {
-    for (const source of parseSrcset(attributes[attributeName])) {
-      pushSourceImageHint(candidates, {
-        rawUrl: source.rawUrl,
-        width: source.width ?? width,
-        height,
-        context,
-      });
-    }
+    for (const source of parseSrcset(attributes[attributeName])) push(source.rawUrl, source.width);
   }
-  for (const attributeName of [
-    "data-src",
-    "data-original",
-    "data-original-src",
-    "data-lazy-src",
-  ] as const) {
-    if (!attributes[attributeName]) continue;
-    pushSourceImageHint(candidates, {
-      rawUrl: attributes[attributeName],
-      width,
-      height,
-      context,
-    });
+  for (const attributeName of ["data-src", "data-original", "data-original-src", "data-lazy-src"] as const) {
+    if (attributes[attributeName]) push(attributes[attributeName]);
   }
-  for (const source of parseSrcset(attributes.srcset)) {
-    pushSourceImageHint(candidates, {
-      rawUrl: source.rawUrl,
-      width: source.width ?? width,
-      height,
-      context,
-    });
-  }
-  if (attributes.src) {
-    pushSourceImageHint(candidates, {
-      rawUrl: attributes.src,
-      width,
-      height,
-      context,
-    });
-  }
+  for (const source of parseSrcset(attributes.srcset)) push(source.rawUrl, source.width);
+  if (attributes.src) push(attributes.src);
 }
 
 function parseSrcset(value: string | undefined): Array<{ rawUrl: string; width?: number; score: number }> {
@@ -1964,18 +2056,24 @@ function normalizeImageMime(value: string | undefined): SafeImageBinary["mimeTyp
 }
 
 function detectRasterImageMime(bytes: Buffer): SafeImageBinary["mimeType"] | undefined {
-  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
-    return "image/png";
-  }
+  if (hasPngSignature(bytes)) return "image/png";
   if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
     return "image/jpeg";
   }
-  const signature = bytes.subarray(0, 12).toString("ascii");
-  if (signature.startsWith("GIF87a") || signature.startsWith("GIF89a")) {
-    return "image/gif";
-  }
-  if (signature.startsWith("RIFF") && signature.slice(8, 12) === "WEBP") {
-    return "image/webp";
-  }
+  if (hasGifSignature(bytes)) return "image/gif";
+  if (hasWebpSignature(bytes)) return "image/webp";
   return undefined;
+}
+
+function hasPngSignature(bytes: Buffer): boolean {
+  return bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE);
+}
+
+function hasGifSignature(bytes: Buffer): boolean {
+  const signature = bytes.toString("ascii", 0, 6);
+  return signature === "GIF87a" || signature === "GIF89a";
+}
+
+function hasWebpSignature(bytes: Buffer): boolean {
+  return bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP";
 }

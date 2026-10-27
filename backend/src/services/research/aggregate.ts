@@ -1,5 +1,6 @@
 import { fetchArxivPapers } from "./arxiv.js";
 import { chat } from "../llm.js";
+import { containsHan } from "../../lib/text.js";
 import { cached } from "./cache.js";
 import { fetchNewsFeed } from "./rss.js";
 import { newsSourcesForDomain } from "./sources.js";
@@ -11,8 +12,10 @@ import {
   isRelevantResearchItem,
   normalizeProviderDiagnostic,
   providerFailureDiagnostic,
+  type BroadWebSearchResult,
 } from "./webSearch.js";
-import type { ResearchBundle, ResearchItem, ResearchRegion, ResearchSourceKind } from "./types.js";
+import { isRecord, tryParseJson } from "./parse.js";
+import type { NewsSource, ResearchBundle, ResearchItem, ResearchRegion, ResearchSourceKind } from "./types.js";
 
 /** Build a dedupe key from the normalized URL, falling back to source+title. */
 function normalizeDedupeKey(item: ResearchItem): string {
@@ -179,12 +182,11 @@ export function coreInternationalSearchQuery(value: string): string | undefined 
     }
   }
 
-  const terms: string[] = [];
-  for (const match of matches.sort((left, right) => left.start - right.start || left.priority - right.priority)) {
-    if (terms.some((term) => term.toLocaleLowerCase() === match.term.toLocaleLowerCase())) continue;
-    terms.push(match.term);
-    if (terms.length >= 6) break;
-  }
+  const terms = uniqueIgnoringCase(
+    matches
+      .sort((left, right) => left.start - right.start || left.priority - right.priority)
+      .map((match) => match.term)
+  ).slice(0, 6);
 
   if (terms.length < 3) return undefined;
   const compact = terms.join(" ");
@@ -239,44 +241,75 @@ function safeField(value: string, maxLength: number): string {
   return `${cleaned.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
-interface SupplementalResearchWave {
+interface ResearchWave {
   items: ResearchItem[];
   unavailableSources: string[];
 }
 
+interface LabeledResearchTask {
+  label: string;
+  promise: Promise<ResearchItem[]>;
+}
+
+interface BroadWebPlan {
+  label: string;
+  query: string;
+}
+
 /** Run a bounded second search only when the precise international query is sparse. */
-async function collectCoreInternationalResearch(query: string): Promise<SupplementalResearchWave> {
+async function collectCoreInternationalResearch(query: string): Promise<ResearchWave> {
   const tasks = [
     { label: "Google News International (core query)", promise: fetchGoogleNewsArticles(query, 8, "international") },
     { label: "Hacker News article search (core query)", promise: fetchBuiltInWebArticles(query, 8) },
     { label: "arXiv (core query)", promise: fetchArxivPapers(query, 8) },
   ];
+  const broadPlans = [{ label: "Broad web search (core query)", query }];
   const [settled, broadSettled] = await Promise.all([
     Promise.allSettled(tasks.map((task) => task.promise)),
-    Promise.allSettled([fetchBroadWebSourcesWithDiagnostics(query)]),
+    Promise.allSettled(broadPlans.map((plan) => fetchBroadWebSourcesWithDiagnostics(plan.query))),
   ]);
+  const direct = foldSettledTasks(settled, tasks, "Core research source");
+  const broad = foldSettledBroadWeb(broadSettled, broadPlans);
+
+  return {
+    items: filterRelevantResearchItems([...direct.items, ...broad.items], query),
+    unavailableSources: [...direct.unavailableSources, ...broad.unavailableSources],
+  };
+}
+
+/** Split settled source calls into their items and sanitized per-source failures. */
+function foldSettledTasks(
+  settled: PromiseSettledResult<ResearchItem[]>[],
+  tasks: readonly LabeledResearchTask[],
+  fallbackLabel: string
+): ResearchWave {
   const items: ResearchItem[] = [];
   const unavailableSources: string[] = [];
+  settled.forEach((result, index) => {
+    if (result.status === "fulfilled") items.push(...result.value);
+    else unavailableSources.push(providerFailureDiagnostic(tasks[index]?.label ?? fallbackLabel, result.reason));
+  });
+  return { items, unavailableSources };
+}
 
+/** Like `foldSettledTasks`, re-sanitizing the partial-failure warnings broad search returns. */
+function foldSettledBroadWeb(
+  settled: PromiseSettledResult<BroadWebSearchResult>[],
+  plans: readonly BroadWebPlan[]
+): ResearchWave {
+  const items: ResearchItem[] = [];
+  const unavailableSources: string[] = [];
   settled.forEach((result, index) => {
     if (result.status === "fulfilled") {
-      items.push(...result.value);
+      items.push(...result.value.items);
+      unavailableSources.push(
+        ...result.value.unavailableSources.map((warning) => normalizeProviderDiagnostic(warning))
+      );
     } else {
-      unavailableSources.push(providerFailureDiagnostic(tasks[index]?.label ?? "Core research source", result.reason));
+      unavailableSources.push(providerFailureDiagnostic(plans[index]?.label ?? "Broad web search", result.reason));
     }
   });
-
-  const broad = broadSettled[0];
-  if (broad?.status === "fulfilled") {
-    items.push(...broad.value.items);
-    unavailableSources.push(
-      ...broad.value.unavailableSources.map((warning) => normalizeProviderDiagnostic(warning))
-    );
-  } else if (broad?.status === "rejected") {
-    unavailableSources.push(providerFailureDiagnostic("Broad web search (core query)", broad.reason));
-  }
-
-  return { items: filterRelevantResearchItems(items, query), unavailableSources };
+  return { items, unavailableSources };
 }
 
 /**
@@ -293,77 +326,23 @@ async function collectCoreInternationalResearch(query: string): Promise<Suppleme
 export async function collectResearch(domainName: string, query: string): Promise<ResearchBundle> {
   const newsSources = newsSourcesForDomain(domainName, 4);
   const queryPlan = await resolveRegionalQueryPlan(query, domainName);
-  const domesticQuery = queryPlan.domestic;
   const internationalSearchQuery = queryPlan.international;
-  const tasks: { label: string; promise: Promise<ResearchItem[]> }[] = [];
-
-  if (domesticQuery) {
-    tasks.push({ label: "Google News CN", promise: fetchGoogleNewsArticles(domesticQuery, 8, "cn") });
-  }
-  if (internationalSearchQuery) {
-    tasks.push({
-      label: "Google News International",
-      promise: fetchGoogleNewsArticles(internationalSearchQuery, 8, "international"),
-    });
-    tasks.push(
-      { label: "Hacker News article search", promise: fetchBuiltInWebArticles(internationalSearchQuery, 8) },
-      { label: "arXiv", promise: fetchArxivPapers(internationalSearchQuery, 8) },
-      { label: "Hacker News comments", promise: fetchPublicComments(internationalSearchQuery, 5) }
-    );
-  }
-
-  const broadWebPlans = [
-    ...(domesticQuery ? [{ label: "Broad web search (domestic)", query: domesticQuery }] : []),
-    ...(internationalSearchQuery && internationalSearchQuery !== domesticQuery
-      ? [{ label: "Broad web search (international)", query: internationalSearchQuery }]
-      : []),
-  ];
+  // Start order is kept stable: topical searches, broad web, then RSS feeds.
+  const tasks = regionalSearchTasks(queryPlan);
+  const broadPlans = broadWebPlans(queryPlan);
   const broadSettledPromise = Promise.allSettled(
-    broadWebPlans.map((plan) => fetchBroadWebSourcesWithDiagnostics(plan.query))
+    broadPlans.map((plan) => fetchBroadWebSourcesWithDiagnostics(plan.query))
   );
-
-  tasks.push(
-    ...newsSources
-      .map((source) => ({
-        source,
-        sourceQuery: source.region === "international" ? internationalSearchQuery : domesticQuery,
-      }))
-      .filter((entry): entry is { source: (typeof newsSources)[number]; sourceQuery: string } => Boolean(entry.sourceQuery))
-      .map(({ source, sourceQuery }) => ({
-        label: source.name,
-        promise: fetchNewsFeed(source).then((items) =>
-          items.map((item) => ({
-            ...item,
-            query: sourceQuery,
-          }))
-        ),
-      }))
-  );
+  tasks.push(...newsFeedTasks(newsSources, queryPlan));
 
   const [settled, broadSettled] = await Promise.all([
     Promise.allSettled(tasks.map((task) => task.promise)),
     broadSettledPromise,
   ]);
-  const unavailableSources: string[] = [];
-  const groups: ResearchItem[][] = [];
-  broadSettled.forEach((result, index) => {
-    const label = broadWebPlans[index]?.label ?? "Broad web search";
-    if (result.status === "fulfilled") {
-      groups.push(result.value.items);
-      unavailableSources.push(
-        ...result.value.unavailableSources.map((warning) => normalizeProviderDiagnostic(warning))
-      );
-    } else {
-      unavailableSources.push(providerFailureDiagnostic(label, result.reason));
-    }
-  });
-  settled.forEach((result, index) => {
-    if (result.status === "fulfilled") groups.push(result.value);
-    else unavailableSources.push(
-      providerFailureDiagnostic(tasks[index]?.label ?? "Research source", result.reason)
-    );
-  });
-  let relevantItems = filterRelevantResearchItems(groups.flat(), query);
+  const broad = foldSettledBroadWeb(broadSettled, broadPlans);
+  const direct = foldSettledTasks(settled, tasks, "Research source");
+  const unavailableSources = [...broad.unavailableSources, ...direct.unavailableSources];
+  let relevantItems = filterRelevantResearchItems([...broad.items, ...direct.items], query);
   const coreQuery = internationalSearchQuery
     ? coreInternationalSearchQuery(internationalSearchQuery)
     : undefined;
@@ -381,6 +360,54 @@ export async function collectResearch(domainName: string, query: string): Promis
     unavailableSources: [...new Set(unavailableSources)],
     coverage: researchCoverage(items),
   };
+}
+
+/** Topical news/article/paper/comment searches for each side of the regional plan. */
+function regionalSearchTasks(plan: RegionalQueryPlan): LabeledResearchTask[] {
+  const tasks: LabeledResearchTask[] = [];
+  if (plan.domestic) {
+    tasks.push({ label: "Google News CN", promise: fetchGoogleNewsArticles(plan.domestic, 8, "cn") });
+  }
+  const international = plan.international;
+  if (international) {
+    tasks.push(
+      {
+        label: "Google News International",
+        promise: fetchGoogleNewsArticles(international, 8, "international"),
+      },
+      { label: "Hacker News article search", promise: fetchBuiltInWebArticles(international, 8) },
+      { label: "arXiv", promise: fetchArxivPapers(international, 8) },
+      { label: "Hacker News comments", promise: fetchPublicComments(international, 5) }
+    );
+  }
+  return tasks;
+}
+
+/** One broad-web search per distinct regional query. */
+function broadWebPlans(plan: RegionalQueryPlan): BroadWebPlan[] {
+  return [
+    ...(plan.domestic ? [{ label: "Broad web search (domestic)", query: plan.domestic }] : []),
+    ...(plan.international && plan.international !== plan.domestic
+      ? [{ label: "Broad web search (international)", query: plan.international }]
+      : []),
+  ];
+}
+
+/** RSS feeds tagged with the regional query that matches each feed's perspective. */
+function newsFeedTasks(newsSources: NewsSource[], plan: RegionalQueryPlan): LabeledResearchTask[] {
+  return newsSources.flatMap((source) => {
+    const sourceQuery = source.region === "international" ? plan.international : plan.domestic;
+    if (!sourceQuery) return [];
+    return [{
+      label: source.name,
+      promise: fetchNewsFeed(source).then((items) =>
+        items.map((item) => ({
+          ...item,
+          query: sourceQuery,
+        }))
+      ),
+    }];
+  });
 }
 
 export interface RegionalQueryPlan {
@@ -533,6 +560,24 @@ interface TranslationAnchorRequirement {
   kind: "concept" | "entity" | "named" | "specific";
 }
 
+interface AnchorSpan {
+  start: number;
+  end: number;
+  kind: TranslationAnchorRequirement["kind"];
+}
+
+const ENGLISH_GLUE_WORDS = new Set([
+  "about", "after", "and", "are", "before", "can", "could", "did", "do", "does", "for", "from", "how", "in", "into", "is", "may", "might", "of", "on", "or", "should", "the", "to", "versus", "what", "when", "where", "which", "why", "will", "with", "would",
+]);
+const CHINESE_GLUE_CHARS = new Set([
+  "的", "了", "和", "与", "及", "在", "对", "为", "将", "会", "是", "把", "被", "让", "从", "向", "中", "于", "之", "其", "而", "或", "以",
+]);
+const ANCHOR_GLUE_TERMS = new Set([
+  ...ENGLISH_GLUE_WORDS,
+  ...CHINESE_GLUE_CHARS,
+  "如何", "怎么", "怎样", "为什么", "为何", "是否", "请问",
+]);
+
 function parseTranslatedQuery(
   raw: string,
   sourceQuery: string,
@@ -542,14 +587,8 @@ function parseTranslatedQuery(
   const reply = raw.trim();
   if (!reply || reply.length > 4_000 || /[\r\n]/u.test(reply)) return undefined;
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(reply);
-  } catch {
-    return undefined;
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
-  const record = parsed as Record<string, unknown>;
+  const record = tryParseJson(reply);
+  if (!isRecord(record)) return undefined;
   if (
     Object.keys(record).length !== 2 ||
     typeof record.query !== "string" ||
@@ -593,9 +632,8 @@ function normalizeTranslatedAnchors(
   if (value.length !== required.length) return undefined;
   const normalized: Array<{ source: string; target: string }> = [];
   for (let index = 0; index < required.length; index += 1) {
-    const entry = value[index];
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
-    const record = entry as Record<string, unknown>;
+    const record = value[index];
+    if (!isRecord(record)) return undefined;
     if (
       Object.keys(record).length !== 2 ||
       typeof record.source !== "string" ||
@@ -604,27 +642,29 @@ function normalizeTranslatedAnchors(
       /[\r\n]/u.test(record.target)
     ) return undefined;
     const target = removePromptInjectionContent(record.target);
-    if (!isUsableAnchorTranslation(target, targetLanguage)) return undefined;
-    if (required[index].kind === "specific" && (
-      isGenericTranslationAnchor(target) ||
-      !specificAnchorHasEnoughDetail(required[index].source, target, targetLanguage)
-    )) return undefined;
-    if (
-      required[index].kind === "named" &&
-      targetLanguage === "en" &&
-      !/(?:^|\s)(?:[A-Z][a-z]+|[A-Z]{2,})(?=$|\s)/u.test(target)
-    ) return undefined;
-    if (
-      required[index].kind === "named" &&
-      targetLanguage === "zh" &&
-      /^[A-Za-z]/u.test(required[index].source) &&
-      !normalizeAnchorText(target).includes(normalizeAnchorText(required[index].source))
-    ) return undefined;
+    if (!isAcceptableAnchorTarget(required[index], target, targetLanguage)) return undefined;
     normalized.push({ source: record.source, target });
   }
   const targets = normalized.map((anchor) => normalizeAnchorText(anchor.target));
   if (new Set(targets).size !== targets.length) return undefined;
   return normalized;
+}
+
+/** Specific anchors need real detail; named anchors must stay recognisably named. */
+function isAcceptableAnchorTarget(
+  required: TranslationAnchorRequirement,
+  target: string,
+  targetLanguage: "zh" | "en"
+): boolean {
+  if (!isUsableAnchorTranslation(target, targetLanguage)) return false;
+  if (required.kind === "specific") {
+    return !isGenericTranslationAnchor(target)
+      && specificAnchorHasEnoughDetail(required.source, target, targetLanguage);
+  }
+  if (required.kind !== "named") return true;
+  if (targetLanguage === "en") return /(?:^|\s)(?:[A-Z][a-z]+|[A-Z]{2,})(?=$|\s)/u.test(target);
+  return !/^[A-Za-z]/u.test(required.source)
+    || normalizeAnchorText(target).includes(normalizeAnchorText(required.source));
 }
 
 function isUsableAnchorTranslation(value: string, language: "zh" | "en"): boolean {
@@ -635,7 +675,7 @@ function isUsableAnchorTranslation(value: string, language: "zh" | "en"): boolea
       /^(?:[A-Z]|[A-Za-z](?:[+#.]{1,2}))$/u.test(value)
     );
   }
-  return /[\u3400-\u9fff]/u.test(value) || /^[A-Za-z0-9.+#-]{1,}$/u.test(value);
+  return containsHan(value) || /^[A-Za-z0-9.+#-]{1,}$/u.test(value);
 }
 
 function isGenericTranslationAnchor(value: string): boolean {
@@ -714,8 +754,15 @@ function extractObviousEntities(value: string): string[] {
   )];
 }
 
-function containsHan(value: string): boolean {
-  return /[\u3400-\u9fff]/u.test(value);
+/** Keep the first spelling of each term, comparing case-insensitively. */
+function uniqueIgnoringCase(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const key = value.toLocaleLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -739,32 +786,23 @@ export function regionalQueryPlan(query: string, domainName = ""): RegionalQuery
   void domainName;
   const cleanQuery = cleanSearchQuery(query);
   if (!cleanQuery) return {};
-  const hasHan = /[\u3400-\u9fff]/u.test(cleanQuery);
+  const hasHan = containsHan(cleanQuery);
   const sourceLanguage: "zh" | "en" = hasHan ? "zh" : "en";
   const targetLanguage: "zh" | "en" = hasHan ? "en" : "zh";
   const sourceQuery = hasHan ? compactChineseSearchQuery(cleanQuery) : cleanQuery;
   const sourceText = cleanQuery.toLocaleLowerCase();
-  const translated: string[] = [];
-  const preservedEntities = extractObviousEntities(cleanQuery);
-
-  for (const concept of CONCEPT_TRANSLATIONS) {
-    const sourceTerms = concept[sourceLanguage];
-    if (sourceTerms.some((term) => sourceTermRanges(sourceText, term.toLocaleLowerCase()).length > 0)) {
-      const term = concept[targetLanguage][0];
-      if (term && !translated.some((existing) => existing.toLocaleLowerCase() === term.toLocaleLowerCase())) {
-        translated.push(term);
-      }
-    }
-  }
+  const translated = CONCEPT_TRANSLATIONS
+    .filter((concept) => concept[sourceLanguage].some((term) =>
+      sourceTermRanges(sourceText, term.toLocaleLowerCase()).length > 0
+    ))
+    .map((concept) => concept[targetLanguage][0])
+    .filter(Boolean);
 
   const hasSufficientCoverage = deterministicTranslationCoverage(sourceQuery, sourceLanguage)
     >= MIN_DETERMINISTIC_TRANSLATION_COVERAGE
     && !hasUnmappedSpecificTerms(sourceQuery, sourceLanguage);
   const targetQuery = translated.length > 0 && hasSufficientCoverage
-    ? [...preservedEntities, ...translated]
-        .filter((term, index, terms) => terms.findIndex((candidate) => candidate.toLocaleLowerCase() === term.toLocaleLowerCase()) === index)
-        .slice(0, 10)
-        .join(" ")
+    ? uniqueIgnoringCase([...extractObviousEntities(cleanQuery), ...translated]).slice(0, 10).join(" ")
     : cleanQuery;
 
   return hasHan
@@ -809,26 +847,20 @@ function hasUnmappedSpecificTerms(
   const covered = deterministicSourceCoverage(sourceQuery, sourceLanguage);
 
   if (sourceLanguage === "zh") {
-    const grammaticalGlue = new Set([
-      "的", "了", "和", "与", "及", "在", "对", "为", "将", "会", "是", "把", "被", "让", "从", "向", "中", "于", "之", "其", "而", "或", "以",
-    ]);
     for (let index = 0; index < normalized.length; index += 1) {
       const char = normalized[index];
-      if (!/[\u3400-\u9fff]/u.test(char) || covered[index]) continue;
-      if (grammaticalGlue.has(char) && isCoveredConnector(normalized, covered, index)) continue;
+      if (!containsHan(char) || covered[index]) continue;
+      if (CHINESE_GLUE_CHARS.has(char) && isCoveredConnector(normalized, covered, index)) continue;
       return true;
     }
     return false;
   }
 
-  const englishGlue = new Set([
-    "about", "after", "and", "are", "before", "can", "could", "did", "do", "does", "for", "from", "how", "in", "into", "is", "may", "might", "of", "on", "or", "should", "the", "to", "versus", "what", "when", "where", "which", "why", "will", "with", "would",
-  ]);
   return [...normalized.matchAll(/[a-z][a-z0-9.+-]{2,}/giu)].some((match) => {
     const start = match.index ?? 0;
     const term = match[0].toLocaleLowerCase();
     const fullyCovered = [...term].every((_, offset) => Boolean(covered[start + offset]));
-    return !fullyCovered && !englishGlue.has(term);
+    return !fullyCovered && !ENGLISH_GLUE_WORDS.has(term);
   });
 }
 
@@ -836,21 +868,30 @@ function deterministicSourceCoverage(
   sourceQuery: string,
   sourceLanguage: "zh" | "en"
 ): Uint8Array {
+  const covered = new Uint8Array(sourceQuery.toLocaleLowerCase().length);
+  for (const { start, end } of knownTermSpans(sourceQuery, sourceLanguage)) {
+    covered.fill(1, start, end);
+  }
+  return covered;
+}
+
+/** Every dictionary-concept match, then every obvious-entity match, in the lower-cased query. */
+function knownTermSpans(sourceQuery: string, sourceLanguage: "zh" | "en"): AnchorSpan[] {
   const normalized = sourceQuery.toLocaleLowerCase();
-  const covered = new Uint8Array(normalized.length);
+  const spans: AnchorSpan[] = [];
   for (const concept of CONCEPT_TRANSLATIONS) {
-    for (const rawTerm of concept[sourceLanguage]) {
-      for (const [start, end] of sourceTermRanges(normalized, rawTerm.toLocaleLowerCase())) {
-        covered.fill(1, start, end);
+    for (const term of concept[sourceLanguage]) {
+      for (const [start, end] of sourceTermRanges(normalized, term.toLocaleLowerCase())) {
+        spans.push({ start, end, kind: "concept" });
       }
     }
   }
   for (const entity of extractObviousEntities(sourceQuery)) {
     for (const [start, end] of sourceTermRanges(normalized, entity.toLocaleLowerCase())) {
-      covered.fill(1, start, end);
+      spans.push({ start, end, kind: "entity" });
     }
   }
-  return covered;
+  return spans;
 }
 
 function sourceTermRanges(text: string, term: string): Array<[number, number]> {
@@ -877,58 +918,15 @@ function translationAnchorRequirements(
   sourceQuery: string,
   sourceLanguage: "zh" | "en"
 ): TranslationAnchorRequirement[] {
-  const normalized = sourceQuery.toLocaleLowerCase();
-  const spans: Array<{ start: number; end: number; kind: TranslationAnchorRequirement["kind"] }> = [];
-  for (const concept of CONCEPT_TRANSLATIONS) {
-    for (const term of concept[sourceLanguage]) {
-      for (const [start, end] of sourceTermRanges(normalized, term.toLocaleLowerCase())) {
-        spans.push({ start, end, kind: "concept" });
-      }
-    }
-  }
-  for (const entity of extractObviousEntities(sourceQuery)) {
-    for (const [start, end] of sourceTermRanges(normalized, entity.toLocaleLowerCase())) {
-      spans.push({ start, end, kind: "entity" });
-    }
-  }
-
-  const selected: typeof spans = [];
-  for (const span of spans.sort((left, right) =>
-    left.start - right.start ||
-    (right.end - right.start) - (left.end - left.start) ||
-    Number(right.kind === "entity") - Number(left.kind === "entity")
-  )) {
-    if (selected.some((existing) => span.start < existing.end && span.end > existing.start)) continue;
-    selected.push(span);
-  }
-
-  const anchors = selected.map((span) => ({
-    source: sourceQuery.slice(span.start, span.end),
-    kind: span.kind,
-    start: span.start,
-  }));
-  const glue = new Set([
-    "about", "after", "and", "are", "before", "can", "could", "did", "do", "does", "for", "from", "how", "in", "into", "is", "may", "might", "of", "on", "or", "should", "the", "to", "versus", "what", "when", "where", "which", "why", "will", "with", "would",
-    "的", "了", "和", "与", "及", "在", "对", "为", "将", "会", "是", "把", "被", "让", "从", "向", "中", "于", "之", "其", "而", "或", "以",
-    "如何", "怎么", "怎样", "为什么", "为何", "是否", "请问",
-  ]);
-
-  const orderedSpans = [...selected].sort((left, right) => left.start - right.start);
-  let cursor = 0;
-  for (const span of [...orderedSpans, { start: sourceQuery.length, end: sourceQuery.length, kind: "specific" as const }]) {
-    const rawSegment = sourceQuery.slice(cursor, span.start);
-    const leadingTrimmed = rawSegment.replace(/^[\s\p{P}\p{S}]+/gu, "");
-    const source = leadingTrimmed.replace(/[\s\p{P}\p{S}]+$/gu, "");
-    const start = cursor + rawSegment.indexOf(leadingTrimmed);
-    if (
-      source &&
-      /[A-Za-z0-9\u3400-\u9fff]/u.test(source) &&
-      !glue.has(source.toLocaleLowerCase())
-    ) {
-      anchors.push({ source, kind: unmappedAnchorKind(source, sourceLanguage), start });
-    }
-    cursor = Math.max(cursor, span.end);
-  }
+  const selected = nonOverlappingSpans(knownTermSpans(sourceQuery, sourceLanguage));
+  const anchors = [
+    ...selected.map((span) => ({
+      source: sourceQuery.slice(span.start, span.end),
+      kind: span.kind,
+      start: span.start,
+    })),
+    ...unmappedAnchorSegments(sourceQuery, selected, sourceLanguage),
+  ];
 
   const seen = new Set<string>();
   const unique = anchors
@@ -948,6 +946,45 @@ function translationAnchorRequirements(
       kind: "specific",
     },
   ];
+}
+
+/** Prefer earlier, then longer, then entity spans; the result is ordered by start. */
+function nonOverlappingSpans(spans: AnchorSpan[]): AnchorSpan[] {
+  const selected: AnchorSpan[] = [];
+  for (const span of spans.sort((left, right) =>
+    left.start - right.start ||
+    (right.end - right.start) - (left.end - left.start) ||
+    Number(right.kind === "entity") - Number(left.kind === "entity")
+  )) {
+    if (selected.some((existing) => span.start < existing.end && span.end > existing.start)) continue;
+    selected.push(span);
+  }
+  return selected;
+}
+
+/** The meaningful text between known spans, each kept as its own anchor. */
+function unmappedAnchorSegments(
+  sourceQuery: string,
+  orderedSpans: readonly AnchorSpan[],
+  sourceLanguage: "zh" | "en"
+): Array<TranslationAnchorRequirement & { start: number }> {
+  const segments: Array<TranslationAnchorRequirement & { start: number }> = [];
+  let cursor = 0;
+  for (const span of [...orderedSpans, { start: sourceQuery.length, end: sourceQuery.length }]) {
+    const rawSegment = sourceQuery.slice(cursor, span.start);
+    const leadingTrimmed = rawSegment.replace(/^[\s\p{P}\p{S}]+/gu, "");
+    const source = leadingTrimmed.replace(/[\s\p{P}\p{S}]+$/gu, "");
+    const start = cursor + rawSegment.indexOf(leadingTrimmed);
+    if (
+      source &&
+      /[A-Za-z0-9\u3400-\u9fff]/u.test(source) &&
+      !ANCHOR_GLUE_TERMS.has(source.toLocaleLowerCase())
+    ) {
+      segments.push({ source, kind: unmappedAnchorKind(source, sourceLanguage), start });
+    }
+    cursor = Math.max(cursor, span.end);
+  }
+  return segments;
 }
 
 function unmappedAnchorKind(

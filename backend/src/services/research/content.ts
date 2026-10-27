@@ -34,17 +34,38 @@ export async function enrichResearchContent(
     .slice(0, limit);
   if (candidates.length === 0) return items;
 
+  const candidateItems = candidates.map(({ item }) => item);
+  const resolvedById = await resolvePublisherUrls(candidateItems);
+  const contentById = await fetchCandidateContent(candidateItems, resolvedById, fetchPage);
+
+  return items.map((item) => {
+    const content = contentById.get(item.id);
+    const url = resolvedById.get(item.id) ?? item.url;
+    return content || url !== item.url ? { ...item, url, ...(content ? { content } : {}) } : item;
+  });
+}
+
+/** Google News wrappers resolved to publisher URLs, keyed by item id (changed URLs only). */
+async function resolvePublisherUrls(candidates: ResearchItem[]): Promise<Map<string, string>> {
   const resolvedUrls = await resolveGoogleNewsArticleUrls(
-    candidates.map(({ item }) => item.url),
+    candidates.map((item) => item.url),
     {},
-    candidates.map(({ item }) => ({ title: item.title, sourceName: item.sourceName }))
+    candidates.map((item) => ({ title: item.title, sourceName: item.sourceName }))
   );
   const resolvedById = new Map<string, string>();
-  candidates.forEach(({ item }, index) => {
+  candidates.forEach((item, index) => {
     const resolved = resolvedUrls[index] ?? item.url;
     if (resolved !== item.url) resolvedById.set(item.id, resolved);
   });
+  return resolvedById;
+}
 
+/** Fetch page text with a small worker pool; unresolved Google News wrappers are skipped. */
+async function fetchCandidateContent(
+  candidates: ResearchItem[],
+  resolvedById: ReadonlyMap<string, string>,
+  fetchPage: FetchPage
+): Promise<Map<string, string>> {
   const contentById = new Map<string, string>();
   let cursor = 0;
   const workers = Array.from(
@@ -54,23 +75,15 @@ export async function enrichResearchContent(
         const candidate = candidates[cursor];
         cursor += 1;
         if (!candidate) continue;
-        const resolvedUrl = resolvedById.get(candidate.item.id) ?? candidate.item.url;
+        const resolvedUrl = resolvedById.get(candidate.id) ?? candidate.url;
         if (isGoogleNewsWrapper(resolvedUrl)) continue;
-        const content = await fetchOneSourceContent(
-          { ...candidate.item, url: resolvedUrl },
-          fetchPage
-        );
-        if (content) contentById.set(candidate.item.id, content);
+        const content = await fetchOneSourceContent({ ...candidate, url: resolvedUrl }, fetchPage);
+        if (content) contentById.set(candidate.id, content);
       }
     }
   );
   await Promise.all(workers);
-
-  return items.map((item) => {
-    const content = contentById.get(item.id);
-    const url = resolvedById.get(item.id) ?? item.url;
-    return content || url !== item.url ? { ...item, url, ...(content ? { content } : {}) } : item;
-  });
+  return contentById;
 }
 
 async function defaultFetchPage(url: string): Promise<SafeTextFetchResult> {
@@ -93,15 +106,8 @@ async function fetchOneSourceContent(
     try {
       const response = await fetchPage(item.url);
       if (!response.ok) return undefined;
-      const contentType = response.headers["content-type"]?.toLocaleLowerCase() ?? "";
-      let extracted = "";
-      if (contentType.includes("text/html") || contentType.includes("application/xhtml+xml") || !contentType) {
-        extracted = extractReadablePageText(response.text, MAX_EXTRACTED_CHARACTERS * 2);
-      } else if (contentType.includes("text/plain")) {
-        extracted = cleanExtractedText(response.text, MAX_EXTRACTED_CHARACTERS * 2);
-      } else {
-        return undefined;
-      }
+      const extracted = extractResponseText(response);
+      if (extracted === undefined) return undefined;
       const relevant = selectRelevantPageText(
         extracted,
         [item.query, item.title, item.summary].join(" "),
@@ -112,6 +118,18 @@ async function fetchOneSourceContent(
       return undefined;
     }
   });
+}
+
+/** Readable text for HTML (or untyped) and plain-text bodies; undefined for any other type. */
+function extractResponseText(response: SafeTextFetchResult): string | undefined {
+  const contentType = response.headers["content-type"]?.toLocaleLowerCase() ?? "";
+  if (contentType.includes("text/html") || contentType.includes("application/xhtml+xml") || !contentType) {
+    return extractReadablePageText(response.text, MAX_EXTRACTED_CHARACTERS * 2);
+  }
+  if (contentType.includes("text/plain")) {
+    return cleanExtractedText(response.text, MAX_EXTRACTED_CHARACTERS * 2);
+  }
+  return undefined;
 }
 
 /** Extract article-like text while dropping active, navigational, and boilerplate elements. */
@@ -199,15 +217,11 @@ function decodeHtmlEntities(value: string): string {
   };
   return value.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/giu, (entity, token: string) => {
     const lowered = token.toLocaleLowerCase();
-    if (lowered.startsWith("#x")) {
-      const codePoint = Number.parseInt(lowered.slice(2), 16);
-      return safeCodePoint(codePoint, entity);
-    }
-    if (lowered.startsWith("#")) {
-      const codePoint = Number.parseInt(lowered.slice(1), 10);
-      return safeCodePoint(codePoint, entity);
-    }
-    return named[lowered] ?? entity;
+    if (!lowered.startsWith("#")) return named[lowered] ?? entity;
+    const codePoint = lowered.startsWith("#x")
+      ? Number.parseInt(lowered.slice(2), 16)
+      : Number.parseInt(lowered.slice(1), 10);
+    return safeCodePoint(codePoint, entity);
   });
 }
 
@@ -249,7 +263,6 @@ function isPageContentCandidate(item: ResearchItem): boolean {
   if (item.sourceKind === "comment") return false;
   try {
     const url = new URL(item.url);
-    const hostname = url.hostname.toLocaleLowerCase().replace(/\.$/u, "");
     if (/\.(?:pdf|zip|docx?|xlsx?|pptx?)(?:$|[?#])/iu.test(url.pathname)) return false;
     return url.protocol === "http:" || url.protocol === "https:";
   } catch {
