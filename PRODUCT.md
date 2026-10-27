@@ -46,7 +46,7 @@ Product behavior and real interface copy are present in `frontend/src`, while wo
 2. Keep evidence visible without competing with the draft.
 3. Treat long-running work and partial source failure as normal product states.
 4. Let users retain authorship through direct editing and transparent citations.
-5. Prefer a focused editorial workstation over a generic AI dashboard.
+5. Prefer a focused writing workshop in a calm, hand-painted world over a generic AI dashboard.
 
 ## Accessibility & Inclusion
 

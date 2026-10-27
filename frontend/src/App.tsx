@@ -7,6 +7,9 @@ import DocEditor from "./components/editor/DocEditor.js";
 import ScoreBar from "./components/editor/ScoreBar.js";
 import { BookIcon, Sparkle, WordIcon } from "./components/common/icons.js";
 import ProgressBanner from "./components/common/ProgressBanner.js";
+import SidebarScene from "./components/common/scenery/SidebarScene.js";
+import BackdropScene from "./components/common/scenery/BackdropScene.js";
+import HeroScene from "./components/common/scenery/HeroScene.js";
 import { messages, type Dict, type Lang } from "./lib/i18n.js";
 
 type Mode = "rewrite" | "generate" | "novel";
@@ -17,7 +20,7 @@ const NAV_ITEMS = [
   { mode: "novel", index: "03", Icon: BookIcon, label: "modeNovel" },
 ] as const;
 
-/** Root component: sidebar navigation, gradient hero, and the active view. */
+/** Root component: painted sidebar navigation, illustrated hero, and the active view. */
 export default function App() {
   const { lang, step, mode, busy, progress, error, styleSummary, workspaces, reset, setMode, setLang } = useStore();
   const [generatorView, setGeneratorView] = useState<GeneratorView>("setup");
@@ -39,6 +42,7 @@ export default function App() {
   return (
     <div className="layout" data-mode={mode}>
       <aside className="sidebar">
+        <SidebarScene />
         <div className="side-brand">
           <strong>AI写作</strong>
         </div>
@@ -63,7 +67,7 @@ export default function App() {
 
         <div className="side-foot">
           <span className="side-edition" aria-hidden="true">
-            {lang === "zh" ? "编辑台 · 001" : "COPY DESK · 001"}
+            {lang === "zh" ? "林边手帖 · 001" : "FIELD NOTES · 001"}
           </span>
           <button className="side-item side-lang" onClick={() => setLang(lang === "en" ? "zh" : "en")}>
             {t.langToggle}
@@ -71,17 +75,21 @@ export default function App() {
         </div>
       </aside>
 
-      <div className="main-pane">
+      <div className={`main-pane${showUploadHero ? " has-hero" : ""}`}>
+        <BackdropScene />
         <div className="workspace-folio" aria-hidden="true">
-          <span>AI—001</span>
+          <span>{lang === "zh" ? "晴 · 微风" : "SUNNY · LIGHT BREEZE"}</span>
           <span>{deskName(mode, generatorView, lang)}</span>
           <span>{deskMotto(mode, lang)}</span>
         </div>
         {showUploadHero ? (
           <header className="hero">
-            <h1 className="hero-title">{hero.title}</h1>
-            <p className="hero-sub">{hero.sub}</p>
-            {mode === "generate" && <p className="hero-proxy-hint">{t.researchProxyHint}</p>}
+            <div className="hero-copy">
+              <h1 className="hero-title">{hero.title}</h1>
+              <p className="hero-sub">{hero.sub}</p>
+              {mode === "generate" && <p className="hero-proxy-hint">{t.researchProxyHint}</p>}
+            </div>
+            <HeroScene mode={mode} />
           </header>
         ) : step !== "upload" ? (
           <header className="page-head">
@@ -134,13 +142,13 @@ function heroCopy(t: Dict, mode: Mode): { title: string; sub: string } {
   return { title: t.heroNovelTitle, sub: t.heroNovelSub };
 }
 
-/** Decorative folio label naming the current desk. */
+/** Decorative caption naming the current desk. */
 function deskName(mode: Mode, generatorView: GeneratorView, lang: Lang): string {
   const zh = lang === "zh";
-  if (mode === "rewrite") return zh ? "改写工作台" : "REWRITE DESK";
-  if (mode === "novel") return zh ? "小说工作台" : "FICTION DESK";
-  if (generatorView === "results") return zh ? "标题提案台" : "TITLE DESK";
-  return zh ? "写作工作台" : "WRITING DESK";
+  if (mode === "rewrite") return zh ? "草坡改写台" : "MEADOW REWRITE DESK";
+  if (mode === "novel") return zh ? "林间小说台" : "FOREST FICTION DESK";
+  if (generatorView === "results") return zh ? "云端标题台" : "CLOUD TITLE DESK";
+  return zh ? "晴空写作台" : "SUNNY WRITING DESK";
 }
 
 function deskMotto(mode: Mode, lang: Lang): string {
