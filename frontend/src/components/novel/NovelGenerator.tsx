@@ -45,8 +45,10 @@ export default function NovelGenerator() {
     <form className="generator novel-generator" onSubmit={submit}>
       <section className="step novel-brief">
         <div className="step-head">
-          <span className="badge peach">1</span>
-          <h2>{t.novelStep1}</h2>
+          <h2>
+            <span className="badge peach">1</span>
+            {t.novelStep1}
+          </h2>
         </div>
 
         <div className="novel-field">
@@ -82,8 +84,10 @@ export default function NovelGenerator() {
 
       <section className="step generator-desk novel-settings">
         <div className="step-head">
-          <span className="badge mint">2</span>
-          <h2>{t.novelStep2}</h2>
+          <h2>
+            <span className="badge mint">2</span>
+            {t.novelStep2}
+          </h2>
         </div>
 
         <div className="novel-options">

@@ -29,8 +29,10 @@ export default function UploadPanel() {
     <div className="upload">
       <section className="step upload-source">
         <div className="step-head">
-          <span className="badge peach">1</span>
-          <h2>{t.uploadTitle}</h2>
+          <h2>
+            <span className="badge peach">1</span>
+            {t.uploadTitle}
+          </h2>
         </div>
         <FilePill
           kind="word"
@@ -45,8 +47,10 @@ export default function UploadPanel() {
 
       <section className="step upload-style">
         <div className="step-head">
-          <span className="badge mint">2</span>
-          <h2>{t.chooseStyleTitle}</h2>
+          <h2>
+            <span className="badge mint">2</span>
+            {t.chooseStyleTitle}
+          </h2>
         </div>
         <p className="hint">{t.styleHint}</p>
 

@@ -180,8 +180,10 @@ export default function ArticleGenerator({ onViewChange }: ArticleGeneratorProps
     <div className="generator">
       <section className="step generator-compose">
         <div className="step-head">
-          <span className="badge lavender">1</span>
-          <h2>{t.genStep1}</h2>
+          <h2>
+            <span className="badge lavender">1</span>
+            {t.genStep1}
+          </h2>
         </div>
 
         <div className="title-generate">
@@ -224,8 +226,10 @@ export default function ArticleGenerator({ onViewChange }: ArticleGeneratorProps
 
       <section className="step generator-desk">
         <div className="step-head">
-          <span className="badge mint">2</span>
-          <h2>{t.genStep2}</h2>
+          <h2>
+            <span className="badge mint">2</span>
+            {t.genStep2}
+          </h2>
         </div>
         <div className="generator-row">
           <label className="sr-only" htmlFor="article-style-select">
