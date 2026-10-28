@@ -48,6 +48,8 @@ import {
   selectGoogleNewsPublisherSearchResult,
   isRelevantText,
   parseExaSearchResults,
+  parseDeepSeekSearchResults,
+  deepSeekSearchConfig,
   parseHackerNewsArticles,
   parseHackerNewsComments,
   normalizeProviderDiagnostic,
@@ -1515,6 +1517,43 @@ assert.deepEqual(
   [],
   "Exa must reject every source URL outside the shared public URL policy"
 );
+
+const deepSeekItems = parseDeepSeekSearchResults(JSON.stringify({ results: [
+  {
+    title: "<b>City night running survey</b>",
+    url: "https://example.org/night-running",
+    site_name: "City Research",
+    summary: "Survey summary",
+    snippet: "Original survey excerpt",
+    content: "Survey source material ".repeat(1_000),
+    date: "2026-10-01T12:30:00Z",
+  },
+  { title: "Another source", url: "https://example.com/report", snippet: "Snippet only", date: null },
+  { title: "", url: "https://example.com/empty" },
+  ...unsafeProviderSourceUrls.map((url) => ({ title: "Unsafe source", url })),
+] }), "夜跑");
+assert.equal(deepSeekItems.length, 2);
+assert.equal(deepSeekItems[0].title, "City night running survey");
+assert.equal(deepSeekItems[0].sourceKind, "article");
+assert.equal(deepSeekItems[0].sourceName, "City Research");
+assert.equal(deepSeekItems[0].sourceId, "deepseek-search");
+assert.equal(deepSeekItems[0].summary, "Survey summary");
+assert.equal(deepSeekItems[0].excerpt, "Original survey excerpt");
+assert.ok(deepSeekItems[0].content?.startsWith("Survey source material"));
+assert.ok((deepSeekItems[0].content?.length ?? 0) <= 8_000);
+assert.equal(deepSeekItems[0].publishedAt, "2026-10-01T12:30:00.000Z");
+assert.equal(deepSeekItems[0].query, "夜跑");
+assert.equal(deepSeekItems[1].sourceName, "example.com");
+assert.equal(deepSeekItems[1].summary, "Snippet only");
+assert.equal(deepSeekItems[1].publishedAt, "");
+assert.deepEqual(parseDeepSeekSearchResults("bad json", "query"), []);
+assert.equal(deepSeekSearchConfig({}), undefined);
+assert.equal(deepSeekSearchConfig({ DEEPSEEK_API_KEY: "fixture", DEEPSEEK_SEARCH: "off" }), undefined);
+assert.equal(deepSeekSearchConfig({ LLM_API_KEY: "local", LLM_BASE_URL: "http://localhost:11434/v1" }), undefined);
+assert.equal(deepSeekSearchConfig({ LLM_API_KEY: "primary", DEEPSEEK_API_KEY: "secondary" })?.apiKey, "primary");
+assert.equal(deepSeekSearchConfig({ DEEPSEEK_API_KEY: "fixture" })?.url, "https://api.deepseek.com/v1/tools/search");
+assert.equal(deepSeekSearchConfig({ DEEPSEEK_API_KEY: "fixture", DEEPSEEK_SEARCH_URL: "https://search.example/api" })?.url, "https://search.example/api");
+assert.equal(normalizeProviderDiagnostic(`DeepSeek search: ${upstreamSecretError.message}`), "DeepSeek search: unavailable");
 
 const officialPageHtml = `<!doctype html><html><body>
   <header>Site navigation</header>

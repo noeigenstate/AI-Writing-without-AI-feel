@@ -182,6 +182,47 @@ assert.equal(directRequestHeaders.get("host"), "public.example", "caller Host mu
 
 await testNodeGlobalProxyWithPinnedTargets();
 
+let postBody = "";
+const postRequests: string[] = [];
+await assert.rejects(() => fetchBinaryWithOutboundPolicy(
+  "https://public.example/search",
+  {
+    label: "authenticated-post-test",
+    method: "POST",
+    body: JSON.stringify({ query: "night running" }),
+    headers: { Authorization: "Bearer fixture-key", "Content-Type": "application/json" },
+    maxRedirects: 0,
+    timeoutMs: 1_000,
+    maxBytes: 32,
+  },
+  {
+    lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+    nativeRequest: (url, options, onResponse) => {
+      postRequests.push(url.toString());
+      assert.equal(options.method, "POST");
+      assert.equal(options.servername, "public.example");
+      assert.equal((options.headers as Record<string, string>).Authorization, "Bearer fixture-key");
+      const handle = {
+        setHeader: () => undefined,
+        once: () => handle,
+        end: (body?: string) => {
+          postBody = body ?? "";
+          const responseBody = emptyBody();
+          onResponse({
+            statusCode: 307,
+            headers: { location: "https://other.example/key-trap" },
+            destroy: () => undefined,
+            [Symbol.asyncIterator]: () => responseBody[Symbol.asyncIterator](),
+          });
+        },
+      };
+      return handle;
+    },
+  }
+), /重定向次数过多/);
+assert.equal(postBody, JSON.stringify({ query: "night running" }));
+assert.deepEqual(postRequests, ["https://93.184.216.34/search"], "authenticated POST must never follow a redirect");
+
 const lookupCalls: string[] = [];
 const transportCalls: string[] = [];
 let redirectClosed = false;

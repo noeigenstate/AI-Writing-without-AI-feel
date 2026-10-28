@@ -71,6 +71,8 @@ export interface SafeFetchOptions {
   maxBytes: number;
   maxRedirects?: number;
   headers?: Record<string, string>;
+  method?: "GET" | "POST";
+  body?: string;
 }
 
 export interface SafeFetchResult {
@@ -114,7 +116,7 @@ interface NativeRequestResponse extends AsyncIterable<Uint8Array> {
 interface NativeRequestHandle {
   setHeader: (name: string, value: string) => void;
   once: (event: "error", listener: (error: Error) => void) => NativeRequestHandle;
-  end: () => void;
+  end: (body?: string) => void;
 }
 
 type OpenNativeRequest = (
@@ -280,7 +282,7 @@ export async function fetchBinaryWithOutboundPolicy(
   const lookupHost = dependencies.lookup ?? defaultLookupHost;
   const transport = dependencies.transport ?? (
     (url, address, headers, signal) =>
-      openNativeTransport(url, address, headers, signal, dependencies.nativeRequest)
+      openNativeTransport(url, address, headers, signal, dependencies.nativeRequest, options)
   );
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
   const controller = new AbortController();
@@ -415,13 +417,15 @@ async function openNativeTransport(
   address: ResolvedAddress,
   headers: Readonly<Record<string, string>>,
   signal: AbortSignal,
-  requestOverride?: OpenNativeRequest
+  requestOverride?: OpenNativeRequest,
+  options?: Pick<SafeFetchOptions, "method" | "body">
 ): Promise<SafeTransportResponse> {
   return new Promise((resolve, reject) => {
     const request = requestOverride ?? (
       (url.protocol === "https:" ? httpsRequest : httpRequest) as OpenNativeRequest
     );
     const plan = buildPinnedRequestPlan(url, address, headers, signal);
+    if (options?.method) plan.options.method = options.method;
     const req = request(plan.url, plan.options, (response) => {
       resolve({
         status: response.statusCode ?? 0,
@@ -436,7 +440,7 @@ async function openNativeTransport(
     // IP, while the origin still receives the correct virtual-host header.
     req.setHeader("Host", plan.hostHeader);
     req.once("error", reject);
-    req.end();
+    req.end(options?.body);
   });
 }
 

@@ -189,6 +189,103 @@ assert.ok(capped.evidence.clueGraph.nodes.length > 0);
 assert.match(formatArticleEvidenceContext(capped), /LIMITED-EVIDENCE MODE/);
 assert.equal(hasDraftableEvidence({ ...capped.evidence, claims: [] }), false);
 
+const headline = "当所有人都在夜跑，我们到底在逃离什么";
+const headlineQueries: string[] = [];
+let extractionCalls = 0;
+const recovered = await collectArticleEvidence("生活", headline, {
+  searchHints: ["运动", "城市生活"],
+  collect: async (_domain, query) => {
+    headlineQueries.push(query);
+    return bundle(query, query === "城市夜跑" ? [official] : []);
+  },
+  enrichContent: async (items) => items,
+  enrichImages: async (items) => items,
+  ask: async (prompt, options) => {
+    if (prompt.includes("TASK: evidence-search-queries")) {
+      extractionCalls += 1;
+      assert.equal(options?.temperature, 0);
+      assert.equal(options?.disableThinking, true);
+      assert.equal(options?.timeoutMs, 45_000);
+      assert.match(prompt, /城市生活/);
+      return JSON.stringify({ queries: ["城市夜跑", "夜跑 参与人数 数据"] });
+    }
+    return JSON.stringify({
+      objectiveFacts: [{ statement: "The official record contains a dated event.", sourceRefs: [1] }],
+      gaps: [],
+      saturated: true,
+    });
+  },
+});
+assert.equal(headlineQueries[0], headline);
+assert.equal(headlineQueries[1], "城市夜跑");
+assert.equal(extractionCalls, 1);
+assert.ok(recovered.evidence.claims.length > 0);
+
+const emptyQueries: string[] = [];
+let emptyExtractionCalls = 0;
+const empty = await collectArticleEvidence("生活", headline, {
+  collect: async (_domain, query) => {
+    emptyQueries.push(query);
+    return bundle(query, []);
+  },
+  enrichContent: async (items) => items,
+  enrichImages: async (items) => items,
+  ask: async () => {
+    emptyExtractionCalls += 1;
+    return JSON.stringify({ queries: [headline, "夜跑", "夜跑", "夜跑 调查"] });
+  },
+});
+assert.equal(empty.evidence.iterations, 10);
+assert.equal(emptyExtractionCalls, 1, "extract only once across repeated empty rounds");
+assert.deepEqual(emptyQueries.slice(0, 3), [headline, "夜跑", "夜跑 调查"]);
+assert.equal(new Set(emptyQueries).size, 10);
+assert.ok(emptyQueries.slice(3).every((query) => !query.includes(headline)));
+assert.equal(empty.evidence.stopReason, "No verifiable source material was retrieved.");
+
+const failedExtractionQueries: string[] = [];
+let failedExtractionCalls = 0;
+const extractionFailure = await collectArticleEvidence("生活", headline, {
+  searchHints: ["城市运动"],
+  collect: async (_domain, query) => {
+    failedExtractionQueries.push(query);
+    return bundle(query, query === "夜跑" ? [official] : []);
+  },
+  enrichContent: async (items) => items,
+  enrichImages: async (items) => items,
+  ask: async (prompt) => {
+    if (prompt.includes("TASK: evidence-search-queries")) {
+      failedExtractionCalls += 1;
+      throw new Error("model unavailable");
+    }
+    return JSON.stringify({
+      objectiveFacts: [{ statement: "The official record contains a dated event.", sourceRefs: [1] }],
+      saturated: true,
+      gaps: [],
+    });
+  },
+});
+assert.equal(failedExtractionCalls, 1);
+assert.equal(failedExtractionQueries[1], "夜跑");
+assert.ok(extractionFailure.evidence.claims.length > 0);
+
+const failedAssessments = await collectArticleEvidence("Test", "Fixture", {
+  collect: async (_domain, query) => bundle(query, [official]),
+  enrichContent: async (items) => items,
+  enrichImages: async (items) => items,
+  ask: async () => { throw new Error("request timed out: secret credential at https://private.example"); },
+});
+assert.match(failedAssessments.evidence.stopReason, /Every evidence assessment call failed/);
+assert.match(failedAssessments.evidence.stopReason, /Last failure: Evidence model timed out/);
+assert.doesNotMatch(failedAssessments.evidence.stopReason, /secret|https:/);
+
+const noFacts = await collectArticleEvidence("Test", "Fixture", {
+  collect: async (_domain, query) => bundle(query, [official]),
+  enrichContent: async (items) => items,
+  enrichImages: async (items) => items,
+  ask: async () => JSON.stringify({ objectiveFacts: [], gaps: [], saturated: true }),
+});
+assert.equal(noFacts.evidence.stopReason, "No objective fact remained after source validation.");
+
 const passingAudit = await auditArticleEvidenceDraft(
   "Fixture topic",
   { title: "Fixture topic", paragraphs: ["A sourced statement.[1]"] },

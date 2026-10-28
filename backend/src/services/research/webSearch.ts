@@ -38,6 +38,7 @@ const GOOGLE_NEWS_RPC_COOLDOWN_MS = 60_000;
 const GOOGLE_NEWS_RESOLVER_START_INTERVAL_MS = 400;
 const HACKER_NEWS_NAME = "Hacker News";
 const EXA_API_URL = "https://api.exa.ai/search";
+const DEEPSEEK_SEARCH_URL = "https://api.deepseek.com/v1/tools/search";
 let mcporterAvailablePromise: Promise<boolean> | undefined;
 let googleNewsResolverNextStartAt = 0;
 let googleNewsRpcCooldownUntil = 0;
@@ -51,6 +52,7 @@ export interface BroadWebSearchResult {
 type ProviderFailureCategory = "timed out" | "rate limited" | "authentication unavailable" | "unavailable";
 
 const BROAD_WEB_PROVIDER_LABELS = [
+  "DeepSeek search",
   "Exa article search",
   "Exa comment search",
   "Agent-Reach article search",
@@ -1313,6 +1315,68 @@ export function parseExaSearchResults(
   });
 }
 
+/** Map DeepSeek web results through the shared public-source URL policy. */
+export function parseDeepSeekSearchResults(payload: string | unknown, query: string): ResearchItem[] {
+  return mapPayloadRecords(payload, "results", (raw) => {
+    const title = cleanText(asString(raw.title), 180);
+    const url = normalizePublicSourceUrl(asString(raw.url));
+    if (!title || !url) return undefined;
+
+    const content = cleanText(asString(raw.content), 8_000);
+    const snippet = cleanText(asString(raw.snippet), 600);
+    const summary = cleanText(asString(raw.summary), 700) || snippet || cleanText(content, 700);
+    const sourceName = cleanText(asString(raw.site_name), 100) || inferPublisherName(url);
+    return {
+      id: `deepseek-article:${url.toLowerCase()}`,
+      sourceKind: "article",
+      sourceName,
+      sourceId: "deepseek-search",
+      region: inferPublisherRegion(url, sourceName),
+      title,
+      summary,
+      excerpt: snippet || cleanText(summary || content, 600) || undefined,
+      content: content || undefined,
+      url,
+      publishedAt: normalizeDate(asString(raw.date)),
+      authors: [],
+      query,
+    };
+  });
+}
+
+/** Resolve a dedicated key, or the configured LLM key when its provider is DeepSeek. */
+export function deepSeekSearchConfig(env: NodeJS.ProcessEnv = process.env): { apiKey: string; url: string } | undefined {
+  if (env.DEEPSEEK_SEARCH?.trim().toLowerCase() === "off") return undefined;
+  let usesDeepSeek = false;
+  try {
+    usesDeepSeek = new URL(env.LLM_BASE_URL ?? "https://api.deepseek.com").hostname === "api.deepseek.com";
+  } catch {
+    // An invalid LLM endpoint must not enable search using another provider's key.
+  }
+  const apiKey = (usesDeepSeek
+    ? env.LLM_API_KEY ?? env.DEEPSEEK_API_KEY
+    : env.DEEPSEEK_API_KEY)?.trim();
+  if (!apiKey) return undefined;
+  return { apiKey, url: env.DEEPSEEK_SEARCH_URL?.trim() || DEEPSEEK_SEARCH_URL };
+}
+
+/** Search with bounded public HTTP transport; never forward credentials to redirects. */
+async function fetchDeepSeekSearch(query: string, settings: { apiKey: string; url: string }): Promise<ResearchItem[]> {
+  const endpoint = normalizePublicSourceUrl(settings.url);
+  if (!endpoint || new URL(endpoint).protocol !== "https:") throw new Error("Invalid DeepSeek search endpoint");
+  const res = await fetchTextWithOutboundPolicy(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${settings.apiKey}` },
+    body: JSON.stringify({ query: query.slice(0, 128), count: 8, need_content: true }),
+    label: "DeepSeek search",
+    timeoutMs: 18_000,
+    maxBytes: 2_000_000,
+    maxRedirects: 0,
+  });
+  if (!res.ok) throw new Error(`DeepSeek search failed: ${res.status}`);
+  return parseDeepSeekSearchResults(res.text, query).slice(0, 8);
+}
+
 /** Map each object in a provider JSON payload's array field, dropping rejected entries. */
 function mapPayloadRecords(
   payload: string | unknown,
@@ -1346,6 +1410,24 @@ export async function fetchBroadWebSourcesWithDiagnostics(query: string): Promis
   const cleanQuery = cleanText(query, 240);
   if (!cleanQuery) return { items: [], unavailableSources: [] };
 
+  const settings = deepSeekSearchConfig();
+  const settled = await Promise.allSettled([
+    fetchExaSourcesWithDiagnostics(cleanQuery),
+    settings ? fetchDeepSeekSearch(cleanQuery, settings) : Promise.resolve([]),
+  ]);
+  const existing = settled[0].status === "fulfilled" ? settled[0].value : { items: [], unavailableSources: [] };
+  const deepSeekItems = settled[1].status === "fulfilled" ? settled[1].value : [];
+  return {
+    items: [...existing.items, ...deepSeekItems],
+    unavailableSources: [
+      ...existing.unavailableSources,
+      ...providerDiagnosticsFromSettled<unknown>(settled, ["Broad web provider", "DeepSeek search"]),
+    ],
+  };
+}
+
+/** Preserve the Exa and Agent-Reach fallback behavior alongside other web providers. */
+async function fetchExaSourcesWithDiagnostics(cleanQuery: string): Promise<BroadWebSearchResult> {
   const apiKey = process.env.EXA_API_KEY?.trim();
   if (apiKey) {
     const direct = await Promise.allSettled([

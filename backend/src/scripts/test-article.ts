@@ -3,6 +3,8 @@ import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import JSZip from "jszip";
 import { createApp } from "../app.js";
+import { assertDraftableEvidence } from "../routes/article.routes.js";
+import { ArticleEvidenceIncompleteError, type ArticleEvidenceReport } from "../services/research/evidencePipeline.js";
 import { parseDocx, exportDocx, createDocxFromBlocks, createDocxFromParagraphs } from "../services/docx.js";
 import {
   ARTICLE_DOMAINS,
@@ -31,6 +33,27 @@ import {
   isArticleLengthTier,
   measureArticleLength,
 } from "../services/articleLength.js";
+
+const emptyEvidence: ArticleEvidenceReport = {
+  status: "incomplete",
+  iterations: 10,
+  saturated: false,
+  stopReason: "No verifiable source material was retrieved.",
+  rounds: [],
+  claims: [],
+  clueGraph: { primaryAxis: "event", rationale: "", nodes: [], edges: [] },
+};
+assert.throws(() => assertDraftableEvidence(emptyEvidence, "zh"), (error) => {
+  assert.ok(error instanceof ArticleEvidenceIncompleteError);
+  assert.equal(error.message, "经过 10 轮检索没有找到任何可用来源，已停止生成。可以换一个更具体的标题或话题再试。");
+  assert.equal(error.evidence, emptyEvidence);
+  return true;
+});
+assert.throws(() => assertDraftableEvidence(emptyEvidence, "en"), /10 research rounds found no usable sources/);
+assert.throws(() => assertDraftableEvidence({
+  ...emptyEvidence,
+  stopReason: "No objective fact remained after source validation.",
+}, "zh"), /仍没有可用于成文的客观事实/);
 
 const docx = await createDocxFromParagraphs([
   { kind: "heading1", text: "这是一篇公众号文章标题" },

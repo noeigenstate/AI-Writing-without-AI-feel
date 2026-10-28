@@ -211,7 +211,11 @@ export async function generateArticlePayload(input: {
   const { lang } = input;
   const targetLength = input.targetLength ?? "medium";
   const topicTitle = typeof input.topic === "string" ? input.topic : input.topic.title;
-  const evidenceRun = await collectArticleEvidence(input.domain.name, topicTitle);
+  const evidenceRun = await collectArticleEvidence(input.domain.name, topicTitle, {
+    searchHints: typeof input.topic === "string"
+      ? [input.domain.name]
+      : [...input.topic.keywords, input.domain.name],
+  });
   assertDraftableEvidence(evidenceRun.evidence, lang);
   const bundleWithImages = evidenceRun.bundle;
   const researchContext = formatArticleEvidenceContext(evidenceRun);
@@ -255,8 +259,14 @@ export async function generateArticlePayload(input: {
   };
 }
 
-function assertDraftableEvidence(evidence: ArticleEvidenceResult["evidence"], lang: Lang): void {
+export function assertDraftableEvidence(evidence: ArticleEvidenceResult["evidence"], lang: Lang): void {
   if (hasDraftableEvidence(evidence)) return;
+  if (evidence.stopReason === "No verifiable source material was retrieved.") {
+    const message = lang === "zh"
+      ? `经过 ${evidence.iterations} 轮检索没有找到任何可用来源，已停止生成。可以换一个更具体的标题或话题再试。`
+      : `Drafting stopped because ${evidence.iterations} research rounds found no usable sources. Try a more specific title or topic.`;
+    throw new ArticleEvidenceIncompleteError(message, evidence);
+  }
   const message = lang === "zh"
     ? `经过 ${evidence.iterations} 轮检索仍没有可用于成文的客观事实，已停止生成：${evidence.stopReason}`
     : `Drafting stopped because ${evidence.iterations} research rounds produced no objective claim that can support an article: ${evidence.stopReason}`;
