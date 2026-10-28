@@ -75,6 +75,8 @@ function labelsForTask(t: Dict, task: ProgressTask): string[] {
       return t.progressArticleFromTitleSteps;
     case "articleTopics":
       return t.progressArticleTopicSteps;
+    case "novel":
+      return t.progressNovelSteps;
     case "rewrite":
       return t.progressRewriteSteps;
     case "titleCandidates":

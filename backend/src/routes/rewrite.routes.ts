@@ -30,6 +30,8 @@ const upload = multer({
   },
 });
 
+type SourceParagraph = { index: number; kind: string; text: string };
+
 type RewrittenParagraph = {
   index: number;
   kind: string;
@@ -38,10 +40,7 @@ type RewrittenParagraph = {
   sentences: string[];
 };
 
-function paragraphResponse(
-  source: { index: number; kind: string; text: string },
-  rewritten: string
-): RewrittenParagraph {
+function paragraphResponse(source: SourceParagraph, rewritten: string): RewrittenParagraph {
   return {
     index: source.index,
     kind: source.kind,
@@ -52,7 +51,7 @@ function paragraphResponse(
 }
 
 function humanScoreSafeParagraphs(
-  original: { index: number; kind: string; text: string }[],
+  original: SourceParagraph[],
   rewritten: RewrittenParagraph[],
   beforeScore: ReturnType<typeof scoreText>,
   lang: Lang
@@ -68,7 +67,7 @@ function humanScoreSafeParagraphs(
     return keepsFacts && rewrittenScore >= originalScore ? p : paragraphResponse(source, source.text);
   });
 
-  const guardedScore = scoreRewrittenParagraphs(guarded, originalByIndex, lang);
+  const guardedScore = scoreText(rewrittenText(guarded, originalByIndex), lang);
   if (guardedScore.score >= beforeScore.score) {
     return { paragraphs: guarded, score: guardedScore };
   }
@@ -81,7 +80,7 @@ function humanScoreSafeParagraphs(
 }
 
 function protectedFragmentSafeParagraphs(
-  original: { index: number; kind: string; text: string }[],
+  original: SourceParagraph[],
   rewritten: RewrittenParagraph[]
 ): RewrittenParagraph[] {
   const originalByIndex = new Map(original.map((p) => [p.index, p]));
@@ -102,40 +101,17 @@ function rewriteTargetsForDoc(rec: DocRecord): DocRecord["paragraphs"] {
   return rec.paragraphs.filter((p) => allowed.has(p.index));
 }
 
-function scoreParagraphs(paragraphs: { text: string }[], lang: Lang) {
-  return scoreText(paragraphs.map((p) => p.text).join("\n"), lang);
+/** Source text of the paragraphs, joined for scoring. */
+function sourceText(paragraphs: { text: string }[]): string {
+  return paragraphs.map((p) => p.text).join("\n");
 }
 
-function diagnoseParagraphs(paragraphs: { text: string }[], lang: Lang) {
-  return diagnoseText(paragraphs.map((p) => p.text).join("\n"), lang);
-}
-
-function scoreRewrittenParagraphs(
-  paragraphs: RewrittenParagraph[],
-  originalByIndex: Map<number, { index: number; kind: string; text: string }>,
-  lang: Lang
-) {
-  return scoreText(
-    paragraphs
-      .filter((p) => originalByIndex.has(p.index))
-      .map((p) => p.rewritten)
-      .join("\n"),
-    lang
-  );
-}
-
-function diagnoseRewrittenParagraphs(
-  paragraphs: RewrittenParagraph[],
-  originalByIndex: Map<number, { index: number; kind: string; text: string }>,
-  lang: Lang
-) {
-  return diagnoseText(
-    paragraphs
-      .filter((p) => originalByIndex.has(p.index))
-      .map((p) => p.rewritten)
-      .join("\n"),
-    lang
-  );
+/** Rewritten text of the paragraphs that were rewrite targets, joined for scoring. */
+function rewrittenText(paragraphs: RewrittenParagraph[], targetByIndex: Map<number, SourceParagraph>): string {
+  return paragraphs
+    .filter((p) => targetByIndex.has(p.index))
+    .map((p) => p.rewritten)
+    .join("\n");
 }
 
 /**
@@ -224,9 +200,9 @@ router.post("/api/rewrite", async (req, res) => {
     paragraphs = protectedFragmentSafeParagraphs(rewriteTargets, paragraphs);
 
     // 本地算改写前后的人类感分，给前端展示「42 → 86」的效果对照。
-    const before = scoreParagraphs(rewriteTargets, lang);
+    const before = scoreText(sourceText(rewriteTargets), lang);
     const targetByIndex = new Map(rewriteTargets.map((p) => [p.index, p]));
-    let after = scoreRewrittenParagraphs(paragraphs, targetByIndex, lang);
+    let after = scoreText(rewrittenText(paragraphs, targetByIndex), lang);
 
     if (after.score < before.score) {
       const guarded = humanScoreSafeParagraphs(rewriteTargets, paragraphs, before, lang);
@@ -234,8 +210,8 @@ router.post("/api/rewrite", async (req, res) => {
       after = guarded.score;
     }
 
-    const beforeDiagnosis = diagnoseParagraphs(rewriteTargets, lang);
-    const afterDiagnosis = diagnoseRewrittenParagraphs(paragraphs, targetByIndex, lang);
+    const beforeDiagnosis = diagnoseText(sourceText(rewriteTargets), lang);
+    const afterDiagnosis = diagnoseText(rewrittenText(paragraphs, targetByIndex), lang);
 
     res.json({ paragraphs, score: { before: beforeDiagnosis, after: afterDiagnosis } });
   } catch (e) {

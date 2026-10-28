@@ -30,12 +30,7 @@ export function paragraphsToMarkdown(paragraphs: ParagraphDTO[], titleIndex: num
   const lines: string[] = [];
   for (const p of paragraphs) {
     const text = p.sentences.join("").trim();
-    if (!text) continue;
-    if (p.kind === "heading1" || p.index === titleIndex) lines.push(`# ${text}`);
-    else if (p.kind === "heading2") lines.push(`## ${text}`);
-    else if (p.kind === "heading3") lines.push(`### ${text}`);
-    else if (p.kind === "list") lines.push(`- ${text}`);
-    else lines.push(text);
+    if (text) lines.push(markdownParagraph(p.index === titleIndex ? "heading1" : p.kind, text));
   }
   return lines.join("\n\n");
 }
@@ -63,12 +58,7 @@ export function renderBlocksForGzh(
   for (const b of blocks) {
     if (b.type === "paragraph") {
       const text = (b.paragraphIndex !== undefined ? edited.get(b.paragraphIndex) : undefined) ?? b.text.trim();
-      if (!text) continue;
-      if (b.kind === "heading1") lines.push(`# ${text}`);
-      else if (b.kind === "heading2") lines.push(`## ${text}`);
-      else if (b.kind === "heading3") lines.push(`### ${text}`);
-      else if (b.kind === "list") lines.push(`- ${text}`);
-      else lines.push(text);
+      if (text) lines.push(markdownParagraph(b.kind, text));
     } else if (b.type === "figure") {
       // Only the source page is preserved for attribution. The downloaded
       // media bytes stay out of Markdown, and no remote image hotlink is made.
@@ -96,12 +86,23 @@ export function renderBlocksForGzh(
   return { markdown: lines.join("\n\n"), sourceMedia };
 }
 
-function compactInlineText(value: string | undefined): string {
-  return typeof value === "string" ? value.replace(/\s+/gu, " ").trim() : "";
+function markdownParagraph(kind: string, text: string): string {
+  switch (kind) {
+    case "heading1":
+      return `# ${text}`;
+    case "heading2":
+      return `## ${text}`;
+    case "heading3":
+      return `### ${text}`;
+    case "list":
+      return `- ${text}`;
+    default:
+      return text;
+  }
 }
 
-function safeSourcePageUrl(value: string | undefined): string | undefined {
-  return safePublicSourcePageUrl(value);
+function compactInlineText(value: string | undefined): string {
+  return typeof value === "string" ? value.replace(/\s+/gu, " ").trim() : "";
 }
 
 type SourceFigureBlock = Extract<ArticleRenderBlockDTO, { type: "figure" }>;
@@ -121,7 +122,7 @@ function resolveSourceFigureForExport(block: SourceFigureBlock): {
 } | undefined {
   const sourceName = compactInlineText(block.sourceName);
   const sourceTitle = compactInlineText(block.sourceTitle);
-  const sourceUrl = safeSourcePageUrl(block.sourceUrl);
+  const sourceUrl = safePublicSourcePageUrl(block.sourceUrl);
   const mimeMatchesKind = block.mediaKind === "gif"
     ? block.mimeType === "image/gif"
     : block.mediaKind === "image" && ["image/png", "image/jpeg", "image/webp"].includes(block.mimeType);

@@ -1,64 +1,14 @@
-import { XMLParser } from "fast-xml-parser";
 import { cached } from "./cache.js";
 import { fetchTextWithTimeout } from "./http.js";
 import { normalizePublicSourceUrl } from "./networkSafety.js";
+import { asArray, isRecord, xmlParser, xmlText, xmlUrlText, type XmlValue } from "./parse.js";
 import { waitForProvider } from "./rateLimit.js";
 import type { ResearchItem } from "./types.js";
-
-const parser = new XMLParser({
-  attributeNamePrefix: "",
-  ignoreAttributes: false,
-  removeNSPrefix: true,
-  trimValues: true,
-});
-
-type XmlValue = string | number | boolean | Record<string, unknown> | XmlValue[] | null | undefined;
-
-/** Type guard for plain objects (not arrays/null). */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-/** Wrap a value as an array (XML parser yields a scalar for single entries). */
-function asArray<T>(value: T | T[] | undefined): T[] {
-  if (value === undefined) {
-    return [];
-  }
-  return Array.isArray(value) ? value : [value];
-}
-
-/** Coerce an XML node value to clean, whitespace-collapsed text. */
-function cleanText(value: XmlValue): string | undefined {
-  if (value === null || value === undefined) {
-    return undefined;
-  }
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    const text = String(value).replace(/\s+/g, " ").trim();
-    return text || undefined;
-  }
-  if (Array.isArray(value)) {
-    return value.map(cleanText).filter(Boolean).join(", ") || undefined;
-  }
-  const text = cleanText((value as Record<string, unknown>)["#text"] as XmlValue);
-  return text || undefined;
-}
-
-/** Read a URL field without normalizing away embedded control characters. */
-function cleanUrlText(value: XmlValue): string | undefined {
-  if (value === null || value === undefined) return undefined;
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    const raw = String(value);
-    if (/\p{Cc}/u.test(raw)) return undefined;
-    return raw.trim() || undefined;
-  }
-  if (Array.isArray(value)) return undefined;
-  return cleanUrlText((value as Record<string, unknown>)["#text"] as XmlValue);
-}
 
 /** Return the first non-empty cleaned text among the candidates. */
 function firstText(...values: XmlValue[]): string | undefined {
   for (const value of values) {
-    const text = cleanText(value);
+    const text = xmlText(value);
     if (text) {
       return text;
     }
@@ -70,15 +20,15 @@ function firstText(...values: XmlValue[]): string | undefined {
 function entryUrl(entry: Record<string, unknown>): string | undefined {
   const links = asArray(entry.link as Record<string, unknown> | string | undefined);
   const alternate = links.find((link) => isRecord(link) && link.rel === "alternate");
-  const href = isRecord(alternate) ? cleanUrlText(alternate.href as XmlValue) : undefined;
-  const id = cleanUrlText(entry.id as XmlValue);
+  const href = isRecord(alternate) ? xmlUrlText(alternate.href as XmlValue) : undefined;
+  const id = xmlUrlText(entry.id as XmlValue);
   return normalizePublicSourceUrl(href) || normalizePublicSourceUrl(id);
 }
 
 /** Extract author names from an entry, if any. */
 function entryAuthors(entry: Record<string, unknown>): string[] | undefined {
   const authors = asArray(entry.author as Record<string, unknown> | string | undefined)
-    .map((author) => (isRecord(author) ? cleanText(author.name as XmlValue) : cleanText(author as XmlValue)))
+    .map((author) => (isRecord(author) ? xmlText(author.name as XmlValue) : xmlText(author as XmlValue)))
     .filter((author): author is string => Boolean(author));
 
   return authors.length > 0 ? authors : undefined;
@@ -97,12 +47,12 @@ function itemId(url: string): string {
  * @returns Parsed items (entries lacking a title or URL are dropped).
  */
 export function parseArxivAtom(xml: string, query: string): ResearchItem[] {
-  const parsed = parser.parse(xml) as { feed?: { entry?: Record<string, unknown> | Record<string, unknown>[] } };
+  const parsed = xmlParser.parse(xml) as { feed?: { entry?: Record<string, unknown> | Record<string, unknown>[] } };
   const entries = asArray(parsed.feed?.entry);
 
   return entries
     .map((entry): ResearchItem | undefined => {
-      const title = cleanText(entry.title as XmlValue);
+      const title = xmlText(entry.title as XmlValue);
       const url = entryUrl(entry);
 
       if (!title || !url) {
@@ -116,7 +66,7 @@ export function parseArxivAtom(xml: string, query: string): ResearchItem[] {
         sourceId: "arxiv",
         region: "international",
         title,
-        summary: cleanText(entry.summary as XmlValue) ?? "",
+        summary: xmlText(entry.summary as XmlValue) ?? "",
         url,
         publishedAt: firstText(entry.published as XmlValue, entry.updated as XmlValue) ?? "",
         authors: entryAuthors(entry) ?? [],

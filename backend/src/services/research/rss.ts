@@ -1,15 +1,9 @@
-import { XMLParser } from "fast-xml-parser";
+import { containsHan } from "../../lib/text.js";
 import { cached } from "./cache.js";
 import { fetchTextWithTimeout } from "./http.js";
 import { normalizePublicSourceUrl } from "./networkSafety.js";
+import { asArray, isRecord, normalizeDate, xmlParser, xmlText, xmlUrlText, type XmlValue } from "./parse.js";
 import type { NewsSource, ResearchItem, ResearchRegion } from "./types.js";
-
-const parser = new XMLParser({
-  attributeNamePrefix: "",
-  ignoreAttributes: false,
-  removeNSPrefix: true,
-  trimValues: true,
-});
 
 const DOMESTIC_PUBLISHER_DOMAINS = [
   "36kr.com",
@@ -115,49 +109,6 @@ const GENERIC_PUBLISHER_NAMES = new Set([
   "web",
 ]);
 
-type XmlValue = string | number | boolean | Record<string, unknown> | XmlValue[] | null | undefined;
-
-/** Type guard for plain objects (not arrays/null). */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-/** Wrap a value as an array (XML parser yields a scalar for single nodes). */
-function asArray<T>(value: T | T[] | undefined): T[] {
-  if (value === undefined) {
-    return [];
-  }
-  return Array.isArray(value) ? value : [value];
-}
-
-/** Coerce an XML node value to clean, whitespace-collapsed text. */
-function cleanText(value: XmlValue): string | undefined {
-  if (value === null || value === undefined) {
-    return undefined;
-  }
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    const text = String(value).replace(/\s+/g, " ").trim();
-    return text || undefined;
-  }
-  if (Array.isArray(value)) {
-    return value.map(cleanText).filter(Boolean).join(", ") || undefined;
-  }
-  const text = cleanText((value as Record<string, unknown>)["#text"] as XmlValue);
-  return text || undefined;
-}
-
-/** Read a URL field without erasing embedded control characters before validation. */
-function cleanUrlText(value: XmlValue): string | undefined {
-  if (value === null || value === undefined) return undefined;
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    const raw = String(value);
-    if (/\p{Cc}/u.test(raw)) return undefined;
-    return raw.trim() || undefined;
-  }
-  if (Array.isArray(value)) return undefined;
-  return cleanUrlText((value as Record<string, unknown>)["#text"] as XmlValue);
-}
-
 /** Resolve a feed `link` node to an HTTP(S) URL (prefer `alternate`, then href/text). */
 function linkText(value: XmlValue, baseUrl: string): string | undefined {
   if (Array.isArray(value)) {
@@ -166,11 +117,11 @@ function linkText(value: XmlValue, baseUrl: string): string | undefined {
   }
   if (isRecord(value)) {
     return (
-      safeHttpUrl(cleanUrlText(value.href as XmlValue), baseUrl) ||
-      safeHttpUrl(cleanUrlText(value["#text"] as XmlValue), baseUrl)
+      safeHttpUrl(xmlUrlText(value.href as XmlValue), baseUrl) ||
+      safeHttpUrl(xmlUrlText(value["#text"] as XmlValue), baseUrl)
     );
   }
-  return safeHttpUrl(cleanUrlText(value), baseUrl);
+  return safeHttpUrl(xmlUrlText(value), baseUrl);
 }
 
 /** Resolve the publisher URL carried by an RSS/Atom `<source>` node. */
@@ -181,7 +132,7 @@ function publisherUrl(value: XmlValue, baseUrl: string): string | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
-  return safeHttpUrl(cleanUrlText((value.url ?? value.href) as XmlValue), baseUrl);
+  return safeHttpUrl(xmlUrlText((value.url ?? value.href) as XmlValue), baseUrl);
 }
 
 /** Resolve only public source URLs, including safe relative feed links. */
@@ -204,7 +155,7 @@ function domainMatches(hostname: string, domain: string): boolean {
 /** Match only a known publisher name or a small set of ordinary outlet suffixes. */
 function publisherNameMatches(name: string, publisher: string): boolean {
   if (name === publisher) return true;
-  const suffixes = /[\u3400-\u9fff]/u.test(publisher)
+  const suffixes = containsHan(publisher)
     ? ["网", "新闻", "客户端", "中文网"]
     : [" news", " online", " international"];
   return suffixes.some((suffix) => name === `${publisher}${suffix}`);
@@ -286,8 +237,8 @@ function imageUrl(value: XmlValue, baseUrl: string): string | undefined {
   }
 
   const record = value as Record<string, unknown>;
-  const directUrl = cleanUrlText((record.url ?? record.href ?? record.src) as XmlValue);
-  const type = cleanText(record.type as XmlValue)?.toLowerCase() ?? "";
+  const directUrl = xmlUrlText((record.url ?? record.href ?? record.src) as XmlValue);
+  const type = xmlText(record.type as XmlValue)?.toLowerCase() ?? "";
   const normalizedDirectUrl = safeHttpUrl(directUrl, baseUrl);
   if (normalizedDirectUrl && (isImageUrl(normalizedDirectUrl) || type.startsWith("image/"))) {
     return normalizedDirectUrl;
@@ -317,24 +268,10 @@ function normalizeImageUrl(value: string | undefined, baseUrl: string): string |
 /** Extract author names from a feed author node, if any. */
 function authorNames(value: XmlValue): string[] | undefined {
   const authors = asArray(value as Record<string, unknown> | string | undefined)
-    .map((author) => (isRecord(author) ? cleanText(author.name as XmlValue) : cleanText(author as XmlValue)))
+    .map((author) => (isRecord(author) ? xmlText(author.name as XmlValue) : xmlText(author as XmlValue)))
     .filter((author): author is string => Boolean(author));
 
   return authors.length > 0 ? authors : undefined;
-}
-
-/** Normalize a date string to ISO-8601, or "" if missing/unparseable. */
-function normalizeDate(value: string | undefined): string {
-  if (!value) {
-    return "";
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "";
-  }
-
-  return date.toISOString();
 }
 
 /** Build a stable item id from a source and URL. */
@@ -344,16 +281,16 @@ function itemId(source: NewsSource, url: string): string {
 
 /** Map one RSS `<item>` to a research item, or undefined if incomplete. */
 function fromRssItem(item: Record<string, unknown>, source: NewsSource): ResearchItem | undefined {
-  const title = cleanText(item.title as XmlValue);
+  const title = xmlText(item.title as XmlValue);
   const url =
     linkText(item.link as XmlValue, source.url) ||
-    safeHttpUrl(cleanUrlText(item.guid as XmlValue), source.url);
+    safeHttpUrl(xmlUrlText(item.guid as XmlValue), source.url);
 
   if (!title || !url) {
     return undefined;
   }
 
-  const declaredPublisher = cleanText(item.source as XmlValue) || source.name;
+  const declaredPublisher = xmlText(item.source as XmlValue) || source.name;
   const publisherLink = publisherUrl(item.source as XmlValue, source.url) || url;
   const itemSourceName = inferPublisherName(publisherLink, declaredPublisher);
 
@@ -364,10 +301,10 @@ function fromRssItem(item: Record<string, unknown>, source: NewsSource): Researc
     sourceId: source.id,
     region: inferPublisherRegion(publisherLink, itemSourceName, source.region),
     title,
-    summary: cleanText(item.description as XmlValue) ?? "",
+    summary: xmlText(item.description as XmlValue) ?? "",
     url,
     imageUrl: firstImageUrl(url, item.enclosure as XmlValue, item.content as XmlValue, item.thumbnail as XmlValue, item.image as XmlValue, item.description as XmlValue),
-    publishedAt: normalizeDate(cleanText(item.pubDate as XmlValue)),
+    publishedAt: normalizeDate(xmlText(item.pubDate as XmlValue)),
     authors: authorNames(item.author as XmlValue) ?? [],
     query: source.type,
   };
@@ -375,10 +312,10 @@ function fromRssItem(item: Record<string, unknown>, source: NewsSource): Researc
 
 /** Map one Atom `<entry>` to a research item, or undefined if incomplete. */
 function fromAtomEntry(entry: Record<string, unknown>, source: NewsSource): ResearchItem | undefined {
-  const title = cleanText(entry.title as XmlValue);
+  const title = xmlText(entry.title as XmlValue);
   const url =
     linkText(entry.link as XmlValue, source.url) ||
-    safeHttpUrl(cleanUrlText(entry.id as XmlValue), source.url);
+    safeHttpUrl(xmlUrlText(entry.id as XmlValue), source.url);
 
   if (!title || !url) {
     return undefined;
@@ -393,10 +330,10 @@ function fromAtomEntry(entry: Record<string, unknown>, source: NewsSource): Rese
     sourceId: source.id,
     region: inferPublisherRegion(url, itemSourceName, source.region),
     title,
-    summary: cleanText((entry.summary ?? entry.content) as XmlValue) ?? "",
+    summary: xmlText((entry.summary ?? entry.content) as XmlValue) ?? "",
     url,
     imageUrl: firstImageUrl(url, entry.enclosure as XmlValue, entry.content as XmlValue, entry.thumbnail as XmlValue, entry.image as XmlValue, entry.summary as XmlValue),
-    publishedAt: normalizeDate(cleanText((entry.published ?? entry.updated) as XmlValue)),
+    publishedAt: normalizeDate(xmlText((entry.published ?? entry.updated) as XmlValue)),
     authors: authorNames(entry.author as XmlValue) ?? [],
     query: source.type,
   };
@@ -412,7 +349,7 @@ function fromAtomEntry(entry: Record<string, unknown>, source: NewsSource): Rese
  * @returns Parsed items (entries lacking a title or URL are dropped).
  */
 export function parseFeedXml(xml: string, source: NewsSource): ResearchItem[] {
-  const parsed = parser.parse(xml) as {
+  const parsed = xmlParser.parse(xml) as {
     rss?: { channel?: { item?: Record<string, unknown> | Record<string, unknown>[] } };
     feed?: { entry?: Record<string, unknown> | Record<string, unknown>[] };
   };

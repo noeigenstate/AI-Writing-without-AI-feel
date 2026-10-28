@@ -1,10 +1,10 @@
 <div align="center">
 
-# Speak Plainly · 说人话
+# AI写作
 
 **Turn AI-shaped drafts into writing that reads like a person wrote it.**
 
-Open-source AI writing workbench for **Word rewriting**, **human-likeness scoring**, **source-backed article generation**, and **WeChat Official Account formatting**. It works in English and Chinese.
+Open-source AI writing workbench for **Word rewriting**, **fiction writing**, **human-likeness scoring**, **source-backed article generation**, and **WeChat Official Account formatting**. It works in English and Chinese.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-22a06b.svg)](LICENSE)
 ![Node](https://img.shields.io/badge/Node-%E2%89%A520.9-339933?logo=node.js&logoColor=white)
@@ -19,12 +19,12 @@ Open-source AI writing workbench for **Word rewriting**, **human-likeness scorin
 
 ## At A Glance
 
-| Rewrite Word | Generate Articles | WeChat Formatting |
+| Rewrite Word | Generate Articles | Write Fiction |
 | --- | --- | --- |
-| <img src="assets/screenshots/01-rewrite.png" alt="Rewrite Word workflow in the editorial proof-desk interface" /> | <img src="assets/screenshots/02-generate.png" alt="Source-backed article generation workflow" /> | <img src="assets/screenshots/03-gzh.png" alt="WeChat-formatted article preview with a restored source image and attribution" /> |
+| <img src="assets/screenshots/01-rewrite.jpg" alt="Rewrite Word page under a watercolour meadow-cottage scene" /> | <img src="assets/screenshots/02-generate.jpg" alt="Article generation page under a watercolour cumulus-sky scene" /> | <img src="assets/screenshots/03-novel.jpg" alt="Fiction writing page under a watercolour forest-path scene" /> |
 
 <div align="center">
-  <sub>An editorial proof desk for Word rewriting, source-backed article generation, and self-contained WeChat-ready layouts.</sub>
+  <sub>A hand-painted watercolour picture-book workbench: each mode has its own original scene, while the working area stays on calm cream paper.</sub>
 </div>
 
 ## What It Does
@@ -33,8 +33,10 @@ Open-source AI writing workbench for **Word rewriting**, **human-likeness scorin
 - **Score how human the text feels** with a local 0-100 human-likeness score.
 - **Click any sentence** to get alternatives or edit it by hand.
 - **Learn your style** from uploaded `.docx` or `.txt` samples.
-- **Show progress while the model works** for article writing, whole-document rewriting, title options, and topic generation.
+- **Show progress while the model works** for fiction and article writing, whole-document rewriting, title options, and topic generation.
+- **Write fiction from a story brief**: optionally provide a title, then choose genre, viewpoint, tone, and length. The result opens in the same sentence-level editor and exports to Word.
 - **Generate an article from a title or domain** with default searches across relevant web articles, public comments, arXiv papers, and RSS news, using attributed paraphrases or short excerpts.
+- **Clean Chinese WeChat drafts with a whitelist pass** adapted from `lieflat-less-ai-tone`: only explicit AI-tone triggers may change, while structure, facts, citations, numbers, URLs, English identifiers, and quotations remain protected.
 - **Carry verified source media through the full workflow**: the backend downloads and validates attributed web images or GIFs, then reuses the same bytes in the editor, Word, and WeChat export.
 - **Auto-format generated articles for the WeChat Official Account editor**: pick a visual theme in the article editor, click Auto-format, then copy the result straight into 公众号 with one click.
 - **Run privately** with any OpenAI-compatible endpoint, including local model servers.
@@ -104,7 +106,9 @@ The backend binds to `127.0.0.1` by default and accepts browser requests only fr
 
 ## Interface
 
-The current UI is an editorial proof desk: a deep ink-green rail frames a cool paper canvas, coral marks authorship actions, cyan identifies evidence and focus, and the finished draft sits on a white document galley. Rewrite and generation remain separate persistent workspaces, so switching modes does not discard an in-progress document or WeChat layout.
+The current UI is a hand-painted watercolour picture book in the spirit of traditional Japanese animation. Rewrite, generation, and fiction each open on an original scene (a meadow cottage, a cumulus sky, a forest path) whose clouds, grass, light, and windmill drift gently; with reduced motion enabled the movement becomes slower and smaller. Scenery stays in the rail and page header, while the working area uses calm cream-paper cards, with colour, type, and radii drawn from the tokens in `frontend/src/styles/tokens.css`. Rewrite, generation, and fiction remain separate persistent workspaces, so switching modes does not discard an in-progress document or WeChat layout.
+
+The scenery is pre-rendered WebP (`frontend/src/assets/scenery/`), painted procedurally by the generator in `frontend/scripts/paint-scenery/`.
 
 Long-running actions never leave the user waiting without feedback. The frontend shows a progress panel with percentage, current phase, and recent log-style steps for article generation, topic/title generation, and whole-document rewriting.
 
@@ -149,6 +153,8 @@ Topic and article generation issue both a domestic Chinese query and an internat
 
 Domestic feeds include SSPAI, IT Home, cnBeta, GeekPark, ScienceNet and its opinion channel, TMTPost, plus China Daily's China, business, and opinion channels. International feeds include BBC World, NPR World, France 24, Al Jazeera, UN News, WHO News, Nature, TechCrunch, Ars Technica, Wired, MIT Technology Review, Engadget, Hacker News, CNBC, and MarketWatch.
 
+When the backend uses a DeepSeek model, it also queries [DeepSeek Search](https://api-docs.deepseek.com/api/search/) (`POST /v1/tools/search`) as an open-web source, reusing the configured DeepSeek key. It is billed per call, one or two calls per research round. Requests never follow redirects, so the key is not forwarded to another host, and a failure is recorded as unavailable. Set `DEEPSEEK_SEARCH=off` in `backend/.env` to disable it, or `DEEPSEEK_SEARCH_URL` to use another HTTPS endpoint.
+
 Google News and Hacker News search need no key. Set `EXA_API_KEY` in `backend/.env` to search more web articles and public discussions from Reddit, Hacker News, Zhihu, Quora, Stack Overflow, and Stack Exchange directly; Agent-Reach/mcporter remains a fallback. Private or logged-in content is not collected.
 
 The generation page notes that many sources are hosted internationally and that an international proxy can improve coverage on unreliable networks. To route backend requests explicitly, set `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` in `backend/.env`; Node.js 24.14+ enables the proxy after loading `.env`, while Windows `run.bat` also picks up proxy variables already present when it starts.
@@ -158,6 +164,16 @@ Writing prompts ask the model to compare shared facts, narrative differences, in
 The writing prompt tells the model to paraphrase web material by default. When exact wording matters, it asks for no more than 60 Chinese characters or 25 English words and an immediate citation. Public comments are labeled for personal experience, disagreement, or counterpoints rather than facts or statistics; quotations and semantic attribution should still receive a human check before publication.
 
 Inline `[n]` markers are kept only when they resolve to retrieved sources. The model is asked to cite factual claims and external material where possible, but missing markers do not block generation; out-of-range markers are stripped, uncited prose remains uncited, and the retrieved reference list is still attached. Source images are downloaded through the backend's outbound-safety policy and embedded in Word and browser preview data rather than loaded remotely by the browser.
+
+## Evidence Article Pipeline
+
+Full article generation now uses the repository-local [`evidence-article-pipeline`](.agents/skills/evidence-article-pipeline/SKILL.md). Research runs for at least two and at most ten gap-driven rounds. Each round separates source-bound objective facts from opinion, discards public-comment-only claims from the fact ledger, derives specific keywords and unanswered questions, and stops early when the evidence is saturated. Selected sources are checked against Exa/Agent-Reach highlights or bounded source-page text fetched through the outbound safety policy, so the fact extractor is not limited to search snippets. Full source text stays backend-only. If critical gaps remain after round ten, generation continues from the verified subset in limited-evidence mode: conclusions are narrowed and material gaps are disclosed instead of invented.
+
+When generating from a title, the first round searches the title as written. If that returns nothing, which is common for rhetorical headlines, the backend asks the model once to turn the title into two to four searchable queries (entities, events, places, data, and the plain underlying subject) and continues with them plus the topic keywords and domain. If the model is unavailable, deterministic rules strip rhetorical words instead. The API blocks with `422` only when ten rounds produce no objective fact that can support an article, and the message states the actual reason: no source was retrieved at all, every fact assessment failed, or sources were found but no fact survived validation.
+
+After saturation, the backend builds one time, space, event, causal, entity, or question-led clue graph. Every node points back to validated facts and source numbers; only sources with a retrieved real image can be assigned as visual evidence. The drafting prompt receives this fact ledger and clue graph ahead of the ordinary source list. The finished draft is then audited for factual support, citation fit, topic alignment, and—on Chinese WeChat runs—the whitelist tone gate. A failed draft can be regenerated against the same evidence up to three times; persistent failure is returned honestly rather than published.
+
+The skill also defines auditable `research.md`, `clue-graph.md`, `media-manifest.md`, `article.md`, `validation.md`, and `run.json` artifacts for agent-driven article work. Its validator rejects generated images that claim to prove a fact. An agent with `imagegen` may create a clearly labeled non-evidentiary illustration; the web runtime continues to use validated source images and licensed Openverse media only.
 
 ## Narrative and Multimedia
 
@@ -169,7 +185,15 @@ The system uses only relevant, attributable network images or GIFs whose origina
 
 ## Article Length Targets
 
-Length tiers use explicit body-only ranges: Chinese short 450–650 characters, medium 1,000–1,300, and long 3,000–3,800; English short 350–500 words, medium 850–1,100, and long 2,200–2,800. If the first draft misses its band, the backend runs up to two corrective passes. A generation request succeeds only when the final body is inside its selected range; a persistent miss returns a retryable error instead of an off-target article. The final count and target range travel with successful responses and update live while editing. Titles, references, inline citation markers, figure captions, and tables do not count toward the body target.
+Length tiers use explicit body-only ranges: Chinese short 450–650 characters, medium 1,000–1,300, and long 3,000–3,800; English short 350–500 words, medium 850–1,100, and long 2,200–2,800. If the first draft misses its band, the backend runs up to five corrective passes. A generation request succeeds only when the final body is inside its selected range; a persistent miss returns a retryable error instead of an off-target article. The final count and target range travel with successful responses and update live while editing. Titles, references, inline citation markers, figure captions, and tables do not count toward the body target.
+
+Fiction generation uses those same validated length bands, but it does not invoke web research or add citations. Short and medium produce compact fiction forms; the long tier produces an opening chapter with a complete scene arc and forward pressure. The generation prompt preserves the chosen viewpoint and tone, and later sentence polishing receives a fiction-specific continuity guard so it does not invent new plot events.
+
+## Whitelist Cleanup for Chinese WeChat Articles
+
+Chinese articles generated with the **WeChat / 公众号** writing scene receive one optional post-draft cleanup adapted from [`lieflat-less-ai-tone`](https://github.com/larashero3-dotcom/lieflat-less-ai-tone), pinned to upstream commit `27d29232f10124db904ca9c0536d0b67cb3b2833`. The upstream skill is based on a 2.83-million-character corpus comparison and deliberately rejects broad “make it sound human” heuristics.
+
+The integration is conservative by design. It first checks for the upstream whitelist triggers; a clean draft causes no extra model call. When cleanup is needed, the model must return paragraph patches tagged with upstream rule numbers. The backend rejects patches without a matching trigger, patches that still contain the claimed trigger, wholesale rewrites, length drift, citation loss, or changes to numbers, URLs, English identifiers, and quoted text. Paragraph order, semantic roles, section positions, media plans, references, and factual research remain outside the cleanup pass. Failure is non-blocking: the last valid sourced draft continues through the normal pipeline.
 
 ## WeChat Formatting (公众号排版)
 
@@ -198,7 +222,10 @@ LLM_REASONING_EFFORT=off
 cd backend
 npm run build
 npm run test:article
+npm run test:less-ai-tone
+npm run test:novel
 npm run test:research
+npm run test:evidence-pipeline
 npm run test:research-security
 npm run test:licensed-media
 npm run test:docx
@@ -212,6 +239,7 @@ npm run build
 npm run test:progress
 npm run test:gzh-security
 npm run test:api-network
+npm run test:novel-ui
 ```
 
 ## Project Map
@@ -219,17 +247,21 @@ npm run test:api-network
 ```text
 backend/
   src/routes/      API endpoints
-  src/services/    rewrite, article, docx, score, research, gzh formatting
+  src/services/    rewrite, article, novel, whitelist tone cleanup, docx, score, research, gzh formatting
   src/prompts/     model prompts
   assets/gzh/      WeChat theme component libraries (from gzh-design-skill)
+  assets/skills/   Third-party writing-skill notices and licenses
 
 frontend/
-  src/components/  upload, generate, gzh, editor, common UI
+  src/components/  upload, article generation, novel generation, gzh, editor, common UI
   src/lib/         API client, store, i18n
-  src/styles.css   editorial proof-desk theme and responsive layouts
+  src/styles/      design tokens, shell, scenery, surfaces, editor, and responsive styles
+  src/assets/scenery/      watercolour scenery layers (WebP)
+  scripts/paint-scenery/   offline generator for the scenery layers
 
 assets/screenshots/  README screenshots
 docs/                design notes
+.agents/skills/evidence-article-pipeline/  auditable research-to-article skill and validator
 ```
 
 ## Notes
@@ -242,6 +274,8 @@ docs/                design notes
 ## License
 
 This project's own code is under [MIT](LICENSE).
+
+The Chinese WeChat whitelist cleanup adapts [`lieflat-less-ai-tone`](https://github.com/larashero3-dotcom/lieflat-less-ai-tone) by shiujan under the MIT License. The pinned source and bundled license are in [`backend/assets/skills/lieflat-less-ai-tone/`](backend/assets/skills/lieflat-less-ai-tone/).
 
 > **⚠️ Important — bundled AGPL-3.0 content.** The WeChat formatting feature integrates theme component libraries and validation rules from [gzh-design-skill](https://github.com/isjiamu/gzh-design-skill) by 甲木 (Jiamu) × 摸鱼小李 (Moyu Xiaoli), licensed under **AGPL-3.0** (full text: `backend/assets/gzh/LICENSE`).
 

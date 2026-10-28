@@ -1,5 +1,7 @@
 import type { GeneratedArticle } from "../article.js";
 import { normalizePublicSourceUrl, fetchTextWithOutboundPolicy } from "./networkSafety.js";
+import { isRecord, tryParseJson } from "./parse.js";
+import { createConcurrencyGate } from "./rateLimit.js";
 
 const OPENVERSE_IMAGE_SEARCH_URL = "https://api.openverse.org/v1/images/";
 const OPENVERSE_PAGE_SIZE = 8;
@@ -67,8 +69,8 @@ const licensedMediaCache = new Map<string, LicensedMediaCacheEntry>();
 const licensedMediaInFlight = new Map<string, Promise<LicensedMediaItem[]>>();
 const injectedFetchIds = new WeakMap<NonNullable<OpenverseSearchDependencies["fetchJson"]>, number>();
 let nextInjectedFetchId = 1;
-let activeOpenverseRequests = 0;
-const openverseRequestWaiters: Array<() => void> = [];
+/** All Openverse calls share one process-wide, FIFO two-slot gate. */
+const withOpenverseRequestLimit = createConcurrencyGate(OPENVERSE_REQUEST_CONCURRENCY);
 
 /**
  * Search up to three English scene queries and return unique, locally relevant
@@ -81,7 +83,7 @@ export async function searchLicensedMediaForArticle(
   limit: number,
   dependencies: OpenverseSearchDependencies = {}
 ): Promise<LicensedMediaItem[]> {
-  const safeLimit = Math.max(0, Math.min(OPENVERSE_PAGE_SIZE, Math.trunc(limit)));
+  const safeLimit = openverseLimit(limit);
   if (safeLimit === 0) return [];
   const queries = buildLicensedMediaQueries(article, evidenceQueries);
   if (queries.length === 0) return [];
@@ -98,7 +100,7 @@ export async function searchLicensedMediaForArticle(
       continue;
     }
     for (const item of batch) {
-      const key = `${item.landingUrl}\n${item.downloadUrl}`.toLocaleLowerCase();
+      const key = licensedMediaKey(item);
       if (!unique.has(key)) unique.set(key, item);
       if (unique.size >= safeLimit) return [...unique.values()];
     }
@@ -152,7 +154,7 @@ export async function searchOpenverseImages(
   dependencies: OpenverseSearchDependencies = {}
 ): Promise<LicensedMediaItem[]> {
   const compactQuery = compactEnglishMediaQuery(query);
-  const safeLimit = Math.max(0, Math.min(OPENVERSE_PAGE_SIZE, Math.trunc(limit)));
+  const safeLimit = openverseLimit(limit);
   if (!compactQuery || safeLimit === 0) return [];
   const cacheKey = compactQuery.toLocaleLowerCase();
   if (!dependencies.fetchJson) {
@@ -197,14 +199,13 @@ export async function searchOpenverseImages(
 
 /** Parse and independently validate the untrusted Openverse search response. */
 export function parseOpenverseImageSearch(payload: unknown, query: string): LicensedMediaItem[] {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return [];
-  const results = (payload as Record<string, unknown>).results;
+  const results = isRecord(payload) ? payload.results : undefined;
   if (!Array.isArray(results)) return [];
   const unique = new Map<string, LicensedMediaItem>();
   for (const raw of results.slice(0, OPENVERSE_PAGE_SIZE)) {
     const parsed = parseOpenverseImage(raw, query);
     if (!parsed) continue;
-    const key = `${parsed.landingUrl}\n${parsed.downloadUrl}`.toLocaleLowerCase();
+    const key = licensedMediaKey(parsed);
     if (!unique.has(key)) unique.set(key, parsed);
   }
   return [...unique.values()].sort((left, right) =>
@@ -215,8 +216,56 @@ export function parseOpenverseImageSearch(payload: unknown, query: string): Lice
 }
 
 function parseOpenverseImage(raw: unknown, query: string): LicensedMediaItem | undefined {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
-  const item = raw as Record<string, unknown>;
+  if (!isRecord(raw)) return undefined;
+  const work = openverseWorkIdentity(raw);
+  if (!work) return undefined;
+  const urls = openverseWorkUrls(raw, work);
+  if (!urls || !licenseUrlMatches(work.license, work.licenseVersion, urls.licenseUrl)) return undefined;
+  const licenseName = displayLicenseName(work.license, work.licenseVersion);
+  // Openverse's provider-supplied attribution commonly contains HTML links and
+  // direct asset URLs. Build the display credit only from the independently
+  // validated fields instead of returning that untrusted blob to the article.
+  const attribution = `"${work.title}" by ${work.creator}, ${licenseName}.`;
+
+  const width = positiveDimension(raw.width);
+  const height = positiveDimension(raw.height);
+  const mimeType = rasterMimeType(raw.filetype, urls.downloadUrl);
+  if (!width || !height || width < 320 || height < 240 || !mimeType) return undefined;
+
+  const tags = openverseTagNames(raw.tags);
+  if (!isLocallyRelevantLicensedImage(query, work.title, tags)) return undefined;
+
+  return {
+    id: work.id,
+    title: work.title,
+    creator: work.creator,
+    ...(urls.creatorUrl ? { creatorUrl: urls.creatorUrl } : {}),
+    license: work.license,
+    licenseVersion: work.licenseVersion,
+    licenseName,
+    licenseUrl: urls.licenseUrl,
+    landingUrl: urls.landingUrl,
+    downloadUrl: urls.downloadUrl,
+    thumbnailUrl: urls.thumbnailUrl,
+    attribution,
+    mimeType,
+    width,
+    height,
+    query,
+    tags,
+  };
+}
+
+interface OpenverseWorkIdentity {
+  id: string;
+  title: string;
+  creator: string;
+  license: OpenLicenseId;
+  licenseVersion: string;
+}
+
+/** Accept only a non-mature, non-sensitive photograph under an allowed CC license version. */
+function openverseWorkIdentity(item: Record<string, unknown>): OpenverseWorkIdentity | undefined {
   const id = cleanString(item.id, 80);
   const title = cleanString(item.title, 240);
   const creator = cleanString(item.creator, 160);
@@ -236,66 +285,51 @@ function parseOpenverseImage(raw: unknown, query: string): LicensedMediaItem | u
   ) return undefined;
   const sensitivity = item.unstable__sensitivity;
   if (Array.isArray(sensitivity) && sensitivity.length > 0) return undefined;
+  return { id, title, creator, license: typedLicense, licenseVersion };
+}
 
+interface OpenverseWorkUrls {
+  landingUrl: string;
+  downloadUrl: string;
+  licenseUrl: string;
+  creatorUrl?: string;
+  thumbnailUrl: string;
+}
+
+/**
+ * Validate the public URLs. Source and creator pages must be genuine pages,
+ * and no display field may expose the backend-only asset URLs.
+ */
+function openverseWorkUrls(
+  item: Record<string, unknown>,
+  work: OpenverseWorkIdentity
+): OpenverseWorkUrls | undefined {
   const landingUrl = normalizePublicSourceUrl(cleanString(item.foreign_landing_url, 4_096));
   const downloadUrl = normalizePublicSourceUrl(cleanString(item.url, 4_096));
   const licenseUrl = normalizePublicSourceUrl(cleanString(item.license_url, 1_024));
   const rawCreatorUrl = cleanString(item.creator_url, 4_096);
   const creatorUrl = rawCreatorUrl ? normalizePublicSourceUrl(rawCreatorUrl) : undefined;
   if (!landingUrl || !downloadUrl || !licenseUrl || (rawCreatorUrl && !creatorUrl)) return undefined;
-  const thumbnailUrl = `${OPENVERSE_IMAGE_SEARCH_URL}${id}/thumb/?compressed=true`;
+  const thumbnailUrl = `${OPENVERSE_IMAGE_SEARCH_URL}${work.id}/thumb/?compressed=true`;
+  const privateMediaUrls = [downloadUrl, thumbnailUrl];
+  const isAssetLike = (pageUrl: string) =>
+    privateMediaUrls.some((mediaUrl) => sameNormalizedUrl(pageUrl, mediaUrl))
+    || RASTER_ASSET_PATH_PATTERN.test(new URL(pageUrl).pathname);
   if (
-    sameNormalizedUrl(landingUrl, downloadUrl)
-    || sameNormalizedUrl(landingUrl, thumbnailUrl)
-    || RASTER_ASSET_PATH_PATTERN.test(new URL(landingUrl).pathname)
-    || Boolean(creatorUrl && (
-      sameNormalizedUrl(creatorUrl, downloadUrl)
-      || sameNormalizedUrl(creatorUrl, thumbnailUrl)
-      || RASTER_ASSET_PATH_PATTERN.test(new URL(creatorUrl).pathname)
-    ))
-    || displayMetadataContainsUrl(title, [downloadUrl, thumbnailUrl])
-    || displayMetadataContainsUrl(creator, [downloadUrl, thumbnailUrl])
+    isAssetLike(landingUrl)
+    || Boolean(creatorUrl && isAssetLike(creatorUrl))
+    || displayMetadataContainsUrl(work.title, privateMediaUrls)
+    || displayMetadataContainsUrl(work.creator, privateMediaUrls)
   ) return undefined;
-  if (!licenseUrlMatches(typedLicense, licenseVersion, licenseUrl)) return undefined;
-  // Openverse's provider-supplied attribution commonly contains HTML links and
-  // direct asset URLs. Build the display credit only from the independently
-  // validated fields instead of returning that untrusted blob to the article.
-  const attribution = `"${title}" by ${creator}, ${displayLicenseName(typedLicense, licenseVersion)}.`;
+  return { landingUrl, downloadUrl, licenseUrl, creatorUrl, thumbnailUrl };
+}
 
-  const width = positiveDimension(item.width);
-  const height = positiveDimension(item.height);
-  const mimeType = rasterMimeType(item.filetype, downloadUrl);
-  if (!width || !height || width < 320 || height < 240 || !mimeType) return undefined;
-
-  const tags = Array.isArray(item.tags)
-    ? item.tags
-        .flatMap((tag) => tag && typeof tag === "object" && !Array.isArray(tag)
-          ? [cleanString((tag as Record<string, unknown>).name, 80)]
-          : [])
-        .filter(Boolean)
-        .slice(0, 40)
-    : [];
-  if (!isLocallyRelevantLicensedImage(query, title, tags)) return undefined;
-
-  return {
-    id,
-    title,
-    creator,
-    ...(creatorUrl ? { creatorUrl } : {}),
-    license: typedLicense,
-    licenseVersion,
-    licenseName: displayLicenseName(license as OpenLicenseId, licenseVersion),
-    licenseUrl,
-    landingUrl,
-    downloadUrl,
-    thumbnailUrl,
-    attribution,
-    mimeType,
-    width,
-    height,
-    query,
-    tags,
-  };
+function openverseTagNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .flatMap((tag) => isRecord(tag) ? [cleanString(tag.name, 80)] : [])
+    .filter(Boolean)
+    .slice(0, 40);
 }
 
 function compactEnglishMediaQuery(value: string): string | undefined {
@@ -325,9 +359,7 @@ function normalizeMediaToken(value: string): string {
 
 function isLocallyRelevantLicensedImage(query: string, title: string, tags: readonly string[]): boolean {
   const score = licensedImageRelevanceScore(query, title, tags);
-  const queryTokens = new Set(
-    normalizedQueryTokens(query).filter((token) => !QUERY_STOP_WORDS.has(token) && token !== "ai")
-  );
+  const queryTokens = relevanceQueryTokens(query);
   const titleTokens = new Set(normalizedQueryTokens(title));
   const titleOverlap = [...queryTokens].filter((token) => titleTokens.has(token));
   const requiredAnchors = queryTokens.size >= 4 ? 3 : 2;
@@ -336,11 +368,15 @@ function isLocallyRelevantLicensedImage(query: string, title: string, tags: read
 
 /** Prefer fuller scene coverage instead of trusting the provider's result order. */
 function licensedImageRelevanceScore(query: string, title: string, tags: readonly string[]): number {
-  const queryTokens = new Set(
-    normalizedQueryTokens(query).filter((token) => !QUERY_STOP_WORDS.has(token) && token !== "ai")
-  );
+  const queryTokens = relevanceQueryTokens(query);
   const mediaTokens = new Set(normalizedQueryTokens(`${title} ${tags.join(" ")}`));
   return [...queryTokens].filter((token) => mediaTokens.has(token)).length;
+}
+
+function relevanceQueryTokens(query: string): Set<string> {
+  return new Set(
+    normalizedQueryTokens(query).filter((token) => !QUERY_STOP_WORDS.has(token) && token !== "ai")
+  );
 }
 
 function licenseUrlMatches(license: OpenLicenseId, version: string, value: string): boolean {
@@ -376,6 +412,15 @@ function positiveDimension(value: unknown): number | undefined {
   return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= 100_000 ? parsed : undefined;
 }
 
+function openverseLimit(limit: number): number {
+  return Math.max(0, Math.min(OPENVERSE_PAGE_SIZE, Math.trunc(limit)));
+}
+
+/** Identity used to drop duplicate works: same source page plus same asset. */
+function licensedMediaKey(item: LicensedMediaItem): string {
+  return `${item.landingUrl}\n${item.downloadUrl}`.toLocaleLowerCase();
+}
+
 function cleanString(value: unknown, maxLength: number): string {
   if (typeof value !== "string") return "";
   return value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, maxLength);
@@ -395,18 +440,13 @@ async function fetchOpenverseJson(url: string): Promise<unknown> {
   if (!response.ok) {
     throw new Error(`Openverse image search failed: ${response.status}`);
   }
-  try {
-    return JSON.parse(response.text) as unknown;
-  } catch {
-    throw new Error("Openverse image search returned invalid JSON");
-  }
+  const payload = tryParseJson(response.text);
+  if (payload === undefined) throw new Error("Openverse image search returned invalid JSON");
+  return payload;
 }
 
 function isOpenverseSearchEnvelope(value: unknown): value is { results: unknown[] } {
-  return Boolean(value)
-    && typeof value === "object"
-    && !Array.isArray(value)
-    && Array.isArray((value as Record<string, unknown>).results);
+  return isRecord(value) && Array.isArray(value.results);
 }
 
 function openverseTransportIdentity(dependencies: OpenverseSearchDependencies): string {
@@ -419,34 +459,6 @@ function openverseTransportIdentity(dependencies: OpenverseSearchDependencies): 
     injectedFetchIds.set(injected, id);
   }
   return `injected-${id}`;
-}
-
-/** Keep all Openverse calls behind one process-wide, FIFO two-slot gate. */
-async function withOpenverseRequestLimit<T>(task: () => Promise<T>): Promise<T> {
-  await acquireOpenverseRequestSlot();
-  try {
-    return await task();
-  } finally {
-    releaseOpenverseRequestSlot();
-  }
-}
-
-function acquireOpenverseRequestSlot(): Promise<void> {
-  if (activeOpenverseRequests < OPENVERSE_REQUEST_CONCURRENCY) {
-    activeOpenverseRequests += 1;
-    return Promise.resolve();
-  }
-  return new Promise<void>((resolve) => {
-    openverseRequestWaiters.push(() => {
-      activeOpenverseRequests += 1;
-      resolve();
-    });
-  });
-}
-
-function releaseOpenverseRequestSlot(): void {
-  activeOpenverseRequests = Math.max(0, activeOpenverseRequests - 1);
-  openverseRequestWaiters.shift()?.();
 }
 
 function sameNormalizedUrl(left: string, right: string): boolean {

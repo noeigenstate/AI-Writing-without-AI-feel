@@ -1,0 +1,393 @@
+/* App shell: painted sidebar, page ground, hero, banners and progress. */
+
+.layout {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+/* Sidebar: the forest edge. Readable cream nav over deep greens, painted trees at its foot. */
+.sidebar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  height: 100vh;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 28px 16px 18px;
+  background:
+    var(--grain),
+    linear-gradient(180deg, var(--rail-top) 0%, var(--rail-mid) 26%, var(--rail-low) 60%, var(--rail-bottom) 100%);
+  color: var(--cloud);
+  border-radius: 0 28px 28px 0;
+  box-shadow: var(--shadow-rail);
+}
+
+.sidebar > :not(.sidebar-scene) {
+  position: relative;
+  z-index: 1;
+}
+
+.side-brand {
+  padding: 8px 12px 30px;
+}
+
+.side-brand strong {
+  display: inline-block;
+  position: relative;
+  padding-bottom: 8px;
+  color: var(--paper);
+  font-family: var(--display-zh);
+  font-size: var(--fs-2xl);
+  font-weight: 400;
+  line-height: 1.1;
+  letter-spacing: 0.02em;
+}
+
+.side-brand strong::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 7px;
+  background: var(--brand-wave) repeat-x left center / 28px 7px;
+}
+
+.side-nav {
+  display: grid;
+  gap: 8px;
+}
+
+.side-caption {
+  margin: 0 12px 6px;
+  color: var(--cloud);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.side-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 24px 20px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 50px;
+  padding: 9px 14px 9px 12px;
+  border: 1px solid transparent;
+  border-radius: 18px;
+  background: transparent;
+  color: var(--cloud);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  text-align: left;
+}
+
+.side-item:hover:not(:disabled) {
+  border-color: var(--on-rail-line);
+  background: var(--on-rail-wash);
+  box-shadow: none;
+  color: var(--paper-strong);
+  transform: translateX(3px);
+}
+
+.side-item.active {
+  border-color: var(--on-rail-active-line);
+  background: var(--paper);
+  box-shadow: var(--shadow-tab);
+  color: var(--forest-deep);
+}
+
+.side-item.active:hover:not(:disabled) {
+  background: var(--paper-strong);
+  color: var(--forest-deep);
+  transform: translateX(0);
+}
+
+.side-item.active::after {
+  content: "";
+  position: absolute;
+  right: 14px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--sun);
+  box-shadow: 0 0 0 3px var(--sun-ring);
+}
+
+.side-index {
+  color: var(--sun);
+  font-family: var(--display-en);
+  font-size: var(--fs-md);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.side-item.active .side-index {
+  color: var(--roof-dark);
+}
+
+.side-icon {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+}
+
+.side-foot {
+  display: grid;
+  gap: 10px;
+  margin-top: auto;
+  padding: 12px;
+  border-radius: 20px;
+  background: var(--rail-bottom);
+}
+
+.side-edition {
+  padding: 0 6px;
+  color: var(--sun-soft);
+  font-family: var(--display-zh);
+  font-size: var(--fs-sm);
+}
+
+.side-lang {
+  display: flex;
+  justify-content: center;
+  min-height: 42px;
+  border-color: var(--on-rail-line-strong);
+  color: var(--cloud);
+}
+
+/* Page ground. */
+.main-pane {
+  position: relative;
+  min-width: 0;
+  min-height: 100vh;
+  padding: 0 clamp(22px, 4vw, 64px) 168px;
+}
+
+.main-pane > :not(.backdrop) {
+  position: relative;
+  z-index: 1;
+}
+
+.workspace-folio {
+  display: grid;
+  grid-template-columns: 0.8fr 1.2fr 1.4fr;
+  gap: 18px;
+  align-items: center;
+  max-width: var(--content-w);
+  min-height: 56px;
+  margin: 0 auto;
+  color: var(--forest);
+  font-family: var(--display-zh);
+  font-size: var(--fs-md);
+}
+
+.workspace-folio span:nth-child(2) {
+  text-align: center;
+}
+
+.workspace-folio span:last-child {
+  text-align: right;
+}
+
+.main-pane > main,
+.main-pane > .banner,
+.main-pane > .score-panel,
+.main-pane > .style-box,
+.main-pane > footer.hint,
+.page-head {
+  max-width: var(--content-w);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Hero: words on bare paper, an illustrated vignette beside them. */
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: clamp(20px, 3.4vw, 52px);
+  align-items: center;
+  max-width: var(--content-w);
+  margin: 0 auto;
+  padding: 6px 0 clamp(18px, 2.4vw, 30px);
+}
+
+.hero-copy {
+  min-width: 0;
+}
+
+.hero-title {
+  max-width: 13ch;
+  margin: 0;
+  color: var(--ink-strong);
+  font-family: var(--display);
+  font-size: var(--fs-hero);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.12;
+  text-wrap: balance;
+}
+
+.hero-sub {
+  max-width: 44ch;
+  margin: 20px 0 0;
+  color: var(--forest);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  line-height: 1.65;
+}
+
+.hero-proxy-hint {
+  max-width: 52ch;
+  margin: 14px 0 0;
+  color: var(--sky-ink);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 10px 0 20px;
+  background: var(--page-head-rule) left bottom / 100% 5px no-repeat;
+  border-radius: 0 0 6px 6px;
+}
+
+.page-head h1 {
+  margin: 0;
+  color: var(--ink-strong);
+  font-family: var(--display);
+  font-size: var(--fs-display);
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+/* Banners and progress. */
+.banner {
+  margin-top: 18px;
+  margin-bottom: 18px;
+  padding: 14px 20px;
+  border: 1px solid var(--card-line);
+  border-radius: 20px 16px 22px 14px;
+  background: var(--grain), var(--paper);
+  color: var(--ink-strong);
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.banner.busy {
+  border-color: var(--sky-edge);
+  background: var(--grain), var(--sky-soft);
+}
+
+.error {
+  color: var(--bad);
+}
+
+.error.banner {
+  border-color: var(--bad);
+  background: var(--grain), var(--bad-soft);
+}
+
+.hint {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.progress-banner {
+  display: grid;
+  gap: 10px;
+}
+
+.progress-topline,
+.progress-step {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.progress-topline strong {
+  flex: none;
+  font-family: var(--display-en);
+  font-size: var(--fs-lg);
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-track {
+  position: relative;
+  height: 10px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--sky-track);
+}
+
+.progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 100%;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(90deg, var(--sky-deep), var(--sap));
+  transform-origin: left center;
+  transition: transform 550ms ease;
+}
+
+.progress-step,
+.progress-log-item {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.progress-log {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.progress-log-item {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.progress-log-item.done {
+  color: var(--good);
+}
+
+.progress-log-item.active {
+  color: var(--ink-strong);
+  font-weight: 700;
+}
+
+.progress-log-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+
+.progress-log-item.done .progress-log-dot {
+  background: var(--good);
+}
+
+.progress-log-item.active .progress-log-dot {
+  background: var(--roof);
+}
+
+footer.hint {
+  margin-top: 24px;
+  padding-top: 15px;
+  text-align: center;
+}

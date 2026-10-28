@@ -1,10 +1,10 @@
 <div align="center">
 
-# Speak Plainly · 说人话
+# AI写作
 
 **把 AI 味很重的初稿，改成更像真人写的文字。**
 
-一个开源 AI 写作工作台：支持 **Word 改写**、**人类感评分**、**带资料来源的文章生成**、**公众号一键排版**。界面支持中文和英文。
+一个开源 AI 写作工作台：支持 **Word 改写**、**小说创作**、**人类感评分**、**带资料来源的文章生成**、**公众号一键排版**。界面支持中文和英文。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-22a06b.svg)](LICENSE)
 ![Node](https://img.shields.io/badge/Node-%E2%89%A520.9-339933?logo=node.js&logoColor=white)
@@ -19,12 +19,12 @@
 
 ## 一眼看懂
 
-| 改写 Word | 生成文章 | 公众号排版 |
+| 改写 Word | 生成文章 | 写小说 |
 | --- | --- | --- |
-| <img src="assets/screenshots/01-rewrite.png" alt="编辑部校样台风格的 Word 改写流程" /> | <img src="assets/screenshots/02-generate.png" alt="带资料来源的文章生成流程" /> | <img src="assets/screenshots/03-gzh.png" alt="已恢复真实来源图片和署名的公众号排版预览" /> |
+| <img src="assets/screenshots/01-rewrite.jpg" alt="草坡小屋水彩场景下的 Word 改写页" /> | <img src="assets/screenshots/02-generate.jpg" alt="积云晴空水彩场景下的文章生成页" /> | <img src="assets/screenshots/03-novel.jpg" alt="林间小路水彩场景下的小说创作页" /> |
 
 <div align="center">
-  <sub>编辑部校样台：Word 改写、带来源文章生成，以及包含真实来源图片的自包含公众号排版。</sub>
+  <sub>手绘水彩绘本风格的写作台：每种模式各有一幅原创场景，正文工作区保持安静的奶油色纸面。</sub>
 </div>
 
 ## 它能做什么
@@ -33,8 +33,10 @@
 - **给文字打“人类感评分”**，0-100 分，越高越像真人文章。
 - **逐句修改**：点任意句子，选择替代表达，或者手动改。
 - **学习你的口吻**：上传 `.docx` 或 `.txt` 范文，让输出更像你的风格。
-- **显示模型工作进度**：生成文章、整篇润色、标题候选、选题生成都会显示百分比、当前阶段和日志。
+- **显示模型工作进度**：创作小说、生成文章、整篇润色、标题候选、选题生成都会显示百分比、当前阶段和日志。
+- **根据故事设定写小说**：标题可以留空，再选择题材、叙事视角、故事基调和篇幅；生成后进入同一个逐句编辑器，并可导出 Word。
 - **按标题或领域生成文章**：默认搜索相关网页文章、公开评论、arXiv 论文和新闻 RSS，合理转述或短摘录，并带来源、图表和引用。
+- **公众号中文成稿做白名单式去 AI 味**：接入 `lieflat-less-ai-tone` 的明确触发规则，只改命中的句子，同时保护文章结构、事实、引用、数字、网址、英文专名和引语。
 - **让真实来源素材贯穿完整流程**：后端下载并校验带署名的网络图片或 GIF，同一份安全字节会用于编辑器预览、Word 和公众号导出。
 - **生成文章后一键排版公众号**：在文章编辑器里选主题、点「自动排版」，排版结果一键复制、直接粘贴进微信公众号编辑器，样式不丢。
 - **可以本地私有运行**：支持 Ollama、LM Studio、vLLM 等 OpenAI 兼容接口。
@@ -104,7 +106,9 @@ npm run dev
 
 ## 界面风格
 
-当前界面是一张“编辑部校样台”：深墨绿色边栏围住冷调纸张画布，珊瑚色标记会改变正文的动作，青色承载证据与焦点，完成稿落在白色文稿纸上。Word 改写与文章生成拥有彼此独立、持续保留的工作区，切换模式不会丢掉正在编辑的文稿或公众号排版结果。
+当前界面是日式手绘动画风格的水彩绘本：改写、生成、小说三种模式分别对应草坡小屋、积云晴空和林间小路三幅原创场景，云、草、光和风车等图层会缓慢轻动；开启“减少动态效果”时动作会变得更慢、更小。场景只出现在边栏和页头，正文工作区保持奶油色纸面卡片，颜色、字号和圆角统一来自 `frontend/src/styles/tokens.css`。改写、生成和小说拥有彼此独立、持续保留的工作区，切换模式不会丢掉正在编辑的文稿或公众号排版结果。
+
+场景图是离线绘制好的 WebP（`frontend/src/assets/scenery/`），由 `frontend/scripts/paint-scenery/` 里的生成脚本程序化绘制。
 
 所有长耗时动作都会有明确反馈。前端会为文章生成、选题/标题生成和整篇润色显示进度面板，包括百分比、当前阶段和最近日志，避免用户空等。
 
@@ -149,6 +153,8 @@ npm run dev
 
 国内来源包括少数派、IT之家、cnBeta、极客公园、科学网、科学网评论、钛媒体，以及 China Daily 的中国、商业和评论频道；国际来源包括 BBC World、NPR World、France 24、Al Jazeera、UN News、WHO News、Nature、TechCrunch、Ars Technica、Wired、MIT Technology Review、Engadget、Hacker News、CNBC 和 MarketWatch。
 
+使用 DeepSeek 模型时，后端会同时调用 [DeepSeek 联网搜索](https://api-docs.deepseek.com/api/search/)（`POST /v1/tools/search`）作为开放网页来源，直接复用已配置的 DeepSeek 密钥；它按次计费，每轮检索调用 1–2 次。请求不跟随重定向，密钥不会被带到其他站点；失败只记为“暂不可用”。在 `backend/.env` 设置 `DEEPSEEK_SEARCH=off` 可关闭，`DEEPSEEK_SEARCH_URL` 可改用其他 HTTPS 端点。
+
 Google News 和 Hacker News 检索不需要密钥。在 `backend/.env` 中配置 `EXA_API_KEY` 后，系统会直接搜索更多网页文章，并从 Reddit、Hacker News、知乎、Quora、Stack Overflow / Stack Exchange 等公开讨论页补充观点；未配置时仍兼容 Agent-Reach / mcporter。需要登录态的私密内容不会抓取。
 
 生成页会提示：境外站点较多，网络不稳定时开启境外代理通常能获得更完整的检索结果。如果希望后端请求也明确走本地代理，可在 `backend/.env` 设置 `HTTP_PROXY`、`HTTPS_PROXY` 和 `NO_PROXY`；Node.js 24.14+ 会在加载 `.env` 后动态启用代理，Windows 的 `run.bat` 也会读取启动前已存在的代理环境变量。
@@ -158,6 +164,16 @@ Google News 和 Hacker News 检索不需要密钥。在 `backend/.env` 中配置
 写作提示会要求模型默认转述网页内容；只有原话本身有分析价值时才使用短摘录，并要求每处不超过 60 个中文字或 25 个英文词、紧跟来源编号。公开评论会被明确标为个人体验、分歧或反方观点，不应当成事实、统计或权威证据；发布前仍应人工复核引语和语义归属。
 
 正文中的 `[n]` 只保留能对应真实检索资料的编号。模型会尽量为事实、数据和外部材料标注来源，但缺少编号不会阻断文章生成；指向不存在参考文献的编号会被清理，无引用段落保持无引用，不会补造来源。检索到的参考资料仍会附在文末。来源图片会经过后端出站安全策略下载，再以内嵌数据用于 Word 和浏览器预览；浏览器不会直接加载来源站的图片地址。
+
+## 证据驱动文章流水线
+
+完整文章生成现在会执行仓库内置的 [`evidence-article-pipeline`](.agents/skills/evidence-article-pipeline/SKILL.md)。资料检索至少两轮、最多十轮，每轮都会把有来源的客观事实与观点分开，删除仅由公开评论支撑的“事实”，再从实体、文件、日期、地点、反例和资料缺口生成下一轮关键词。高价值来源会进一步读取 Exa / Agent-Reach 高亮或经过出站安全策略抓取的有界原文，事实提取不再只依赖搜索摘要；原文正文只在后端使用，不返回前端。证据提前饱和就立即进入写作；第十轮仍有关键缺口时也会使用已有可核验事实继续成文，但会收窄结论并披露重要证据边界，不会填补或猜测缺失信息。
+
+按标题生成时，第一轮会先用标题原文检索；如果一条资料都没有（带修辞的长标题常见这种情况），后端会让模型把标题一次性拆成 2–4 个可检索的关键词（实体、事件、地点、数据和底层主题），并结合选题关键词与领域名继续检索。模型不可用时改用确定性规则去掉“所有人”“到底”“为什么”等修辞成分。只有十轮后一条可用于成文的客观事实都没有时，接口才返回 `422`，并说明真实原因：一篇资料都没检索到、每轮事实评估都失败，还是资料都有但没有事实通过校验。
+
+资料饱和后，后端会从时间、空间、事件、因果、人物机构或“问题—证据—结论”中选择一条主轴建立线索图。每个节点都回指事实编号和来源编号；只有确实抓取到真实图片的来源才能承担图片证据。事实账本和线索图会先于普通来源清单进入写作提示。成稿还会检查事实支持、引用匹配、主题一致性，以及中文公众号的白名单语气；不通过时最多依据同一份证据重新成文三轮，仍失败就如实停止交付。
+
+这个 skill 还规定了适用于 Agent 工作流的 `research.md`、`clue-graph.md`、`media-manifest.md`、`article.md`、`validation.md` 和 `run.json`，并附带机器验收器。验收器会拒绝任何把模型生成图当作事实证据的做法。有 `imagegen` 能力的 Agent 可以生成明确标注、且不承担事实证明的示意图；网页服务仍只使用经过校验的来源图片和 Openverse 开放许可素材。
 
 ## 叙事与多媒体
 
@@ -169,7 +185,15 @@ Google News 和 Hacker News 检索不需要密钥。在 `backend/.env` 中配置
 
 ## 文章字数目标
 
-字数档位使用明确范围，并只计算正文：中文短篇 450–650 字、中篇 1000–1300 字、长篇 3000–3800 字；英文短篇 350–500 词、中篇 850–1100 词、长篇 2200–2800 词。模型首次生成偏离范围时，后端最多自动校准两轮；只有最终正文落在所选范围内，生成请求才会成功，持续偏离会返回可重试错误而不是展示一篇不达标的成品。成功结果会返回实际字数和目标范围，并在编辑器中随修改实时更新。标题、参考资料、行内引用编号、图注和表格不计入正文目标。
+字数档位使用明确范围，并只计算正文：中文短篇 450–650 字、中篇 1000–1300 字、长篇 3000–3800 字；英文短篇 350–500 词、中篇 850–1100 词、长篇 2200–2800 词。模型首次生成偏离范围时，后端最多自动校准五轮；只有最终正文落在所选范围内，生成请求才会成功，持续偏离会返回可重试错误而不是展示一篇不达标的成品。成功结果会返回实际字数和目标范围，并在编辑器中随修改实时更新。标题、参考资料、行内引用编号、图注和表格不计入正文目标。
+
+小说创作沿用同一套经过校验的篇幅范围，但不会启动网页检索，也不会添加引用。微短篇和短篇会形成紧凑的完整叙事，长档则生成具有完整场景弧和后续张力的长篇开篇。后续逐句润色会带上小说连续性约束，避免擅自增加关键情节。
+
+## 公众号中文成稿白名单清理
+
+选择 **公众号** 写作场景并生成中文文章时，系统会在首稿完成后追加一次可选清理。规则改编自 [`lieflat-less-ai-tone`](https://github.com/larashero3-dotcom/lieflat-less-ai-tone)，固定使用上游提交 `27d29232f10124db904ca9c0536d0b67cb3b2833`。该 skill 基于 283 万字人类与模型语料对比，核心原则是只处理可定位的白名单问题，不凭“读起来像 AI”随意改文。
+
+本项目会先做本地触发检查；没有命中就不会增加模型调用。需要清理时，模型只能返回带上游规则编号的段落补丁。后端会拒绝没有对应触发标记、改完仍未解决触发项、整段重写、导致字数越界、丢失引用，或改动数字、网址、英文专名和引语的补丁。段落顺序、语义角色、小标题位置、配图计划、参考资料和研究事实都不进入这一步。清理失败不会阻断生成，系统会继续使用上一版已经通过校验的有来源文章。
 
 ## 公众号排版
 
@@ -198,7 +222,10 @@ LLM_REASONING_EFFORT=off
 cd backend
 npm run build
 npm run test:article
+npm run test:less-ai-tone
+npm run test:novel
 npm run test:research
+npm run test:evidence-pipeline
 npm run test:research-security
 npm run test:licensed-media
 npm run test:docx
@@ -212,6 +239,7 @@ npm run build
 npm run test:progress
 npm run test:gzh-security
 npm run test:api-network
+npm run test:novel-ui
 ```
 
 ## 项目结构
@@ -219,17 +247,21 @@ npm run test:api-network
 ```text
 backend/
   src/routes/      API 路由
-  src/services/    改写、文章、Word、评分、资料检索、公众号排版
+  src/services/    改写、文章、小说、白名单语气清理、Word、评分、资料检索、公众号排版
   src/prompts/     模型提示词
   assets/gzh/      公众号主题组件库（来自 gzh-design-skill）
+  assets/skills/   第三方写作 skill 的来源说明与许可证
 
 frontend/
-  src/components/  上传、生成、公众号排版、编辑器、通用组件
+  src/components/  上传、文章生成、小说生成、公众号排版、编辑器、通用组件
   src/lib/         API、状态、国际化文案
-  src/styles.css   编辑部校样台主题与响应式布局
+  src/styles/      设计令牌、外壳、场景、卡片、编辑器与响应式样式
+  src/assets/scenery/      水彩场景图层（WebP）
+  scripts/paint-scenery/   场景图层的离线生成脚本
 
 assets/screenshots/  README 截图
 docs/                设计资料
+.agents/skills/evidence-article-pipeline/  可审计的资料搜集、线索图、成文与验收 skill
 ```
 
 ## 使用提醒
@@ -242,6 +274,8 @@ docs/                设计资料
 ## 许可证
 
 本项目自身代码：[MIT](LICENSE)。
+
+公众号中文白名单清理改编自 shiujan 的 [`lieflat-less-ai-tone`](https://github.com/larashero3-dotcom/lieflat-less-ai-tone)，采用 MIT 协议。固定来源提交和随附许可证位于 [`backend/assets/skills/lieflat-less-ai-tone/`](backend/assets/skills/lieflat-less-ai-tone/)。
 
 > **⚠️ 重点：内含 AGPL-3.0 内容。** 公众号排版功能整合了 [gzh-design-skill](https://github.com/isjiamu/gzh-design-skill)（作者：甲木 × 摸鱼小李）的主题组件库和校验规则，该项目采用 **AGPL-3.0** 协议（完整文本见 `backend/assets/gzh/LICENSE`）。
 

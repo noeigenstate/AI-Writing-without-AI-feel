@@ -3,6 +3,8 @@ import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import JSZip from "jszip";
 import { createApp } from "../app.js";
+import { assertDraftableEvidence } from "../routes/article.routes.js";
+import { ArticleEvidenceIncompleteError, type ArticleEvidenceReport } from "../services/research/evidencePipeline.js";
 import { parseDocx, exportDocx, createDocxFromBlocks, createDocxFromParagraphs } from "../services/docx.js";
 import {
   ARTICLE_DOMAINS,
@@ -31,6 +33,27 @@ import {
   isArticleLengthTier,
   measureArticleLength,
 } from "../services/articleLength.js";
+
+const emptyEvidence: ArticleEvidenceReport = {
+  status: "incomplete",
+  iterations: 10,
+  saturated: false,
+  stopReason: "No verifiable source material was retrieved.",
+  rounds: [],
+  claims: [],
+  clueGraph: { primaryAxis: "event", rationale: "", nodes: [], edges: [] },
+};
+assert.throws(() => assertDraftableEvidence(emptyEvidence, "zh"), (error) => {
+  assert.ok(error instanceof ArticleEvidenceIncompleteError);
+  assert.equal(error.message, "经过 10 轮检索没有找到任何可用来源，已停止生成。可以换一个更具体的标题或话题再试。");
+  assert.equal(error.evidence, emptyEvidence);
+  return true;
+});
+assert.throws(() => assertDraftableEvidence(emptyEvidence, "en"), /10 research rounds found no usable sources/);
+assert.throws(() => assertDraftableEvidence({
+  ...emptyEvidence,
+  stopReason: "No objective fact remained after source validation.",
+}, "zh"), /仍没有可用于成文的客观事实/);
 
 const docx = await createDocxFromParagraphs([
   { kind: "heading1", text: "这是一篇公众号文章标题" },
@@ -993,7 +1016,7 @@ const protectedLocalCompaction = await generateArticleDraft(
     });
   }
 );
-assert.equal(protectedLocalCompactionCalls, 3, "a lateral first repair still leaves the second bounded pass available");
+assert.equal(protectedLocalCompactionCalls, 6, "lateral model repairs still leave the local compaction pass available");
 assert.equal(protectedLocalCompaction.length?.inRange, true);
 assert.ok(protectedLocalCompaction.paragraphRoles?.includes("turn"));
 assert.equal((protectedLocalCompaction.paragraphs.join(" ").match(/\[(?:1|2)\]/gu) ?? []).length, 2);
@@ -1033,7 +1056,7 @@ assert.ok(expandedLength >= 1000 && expandedLength <= 1300, `expanded length ${e
 assert.equal(expandedArticle.length?.actual, expandedLength);
 assert.equal(expandedArticle.length?.inRange, true);
 
-// 最多两次纠偏：持续未达标时明确失败，不能把 off-band 草稿当成完成态。
+// 最多五次纠偏：持续未达标时明确失败，不能把 off-band 草稿当成完成态。
 let boundedFixCalls = 0;
 await assert.rejects(
   () => generateArticleDraft(
@@ -1051,10 +1074,10 @@ await assert.rejects(
   ),
   /actual 200, target 350-500/
 );
-assert.equal(boundedFixCalls, 3);
+assert.equal(boundedFixCalls, 6);
 
 // 模型常把引用编号/标点也算进字数，容易在边界上下偏约 1-2%。
-// 两轮模型校准后，小幅超出应本地收敛到上限，小幅不足应补非事实性收束句。
+// 五轮模型校准后，小幅超出应本地收敛到上限，小幅不足应补非事实性收束句。
 let overrunCalls = 0;
 const exactZhParagraphs = (length: number, count = 10) =>
   Array.from({ length: count }, (_, index) => {
@@ -1074,11 +1097,11 @@ const normalizedOverrun = await generateArticleDraft(
     const lengths = [1500, 1400, 1319];
     return JSON.stringify({
       title: "边界压缩",
-      paragraphs: exactZhParagraphs(lengths[overrunCalls - 1]),
+      paragraphs: exactZhParagraphs(lengths[Math.min(overrunCalls - 1, lengths.length - 1)]),
     });
   }
 );
-assert.equal(overrunCalls, 3);
+assert.equal(overrunCalls, 6);
 assert.ok((normalizedOverrun.length?.actual ?? 0) >= 1000);
 assert.ok((normalizedOverrun.length?.actual ?? 0) <= 1300);
 assert.equal(normalizedOverrun.length?.inRange, true);
@@ -1095,10 +1118,13 @@ const normalizedUnderrun = await generateArticleDraft(
     underrunCalls += 1;
     assert.equal(opts?.disableThinking, true);
     const lengths = [700, 850, 981];
-    return JSON.stringify({ title: "边界扩充", paragraphs: ["乙".repeat(lengths[underrunCalls - 1])] });
+    return JSON.stringify({
+      title: "边界扩充",
+      paragraphs: ["乙".repeat(lengths[Math.min(underrunCalls - 1, lengths.length - 1)])],
+    });
   }
 );
-assert.equal(underrunCalls, 3);
+assert.equal(underrunCalls, 6);
 assert.ok((normalizedUnderrun.length?.actual ?? 0) >= 1000);
 assert.ok((normalizedUnderrun.length?.actual ?? 0) <= 1300);
 assert.equal(normalizedUnderrun.length?.inRange, true);

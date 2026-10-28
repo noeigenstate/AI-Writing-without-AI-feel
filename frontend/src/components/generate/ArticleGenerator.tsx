@@ -2,23 +2,27 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchArticleTopics,
   previewResearch,
-  type ResearchItemDTO,
   type TargetLength,
   type TopicOptionDTO,
   type WritingSceneId,
 } from "../../lib/api.js";
 import { useStore } from "../../lib/store.js";
-import { ArrowLeft, Sparkle } from "../common/icons.js";
+import { Sparkle } from "../common/icons.js";
+import { OptionSelect, SegmentedControl, type Option } from "../common/OptionControls.js";
 import ProgressBanner from "../common/ProgressBanner.js";
 import { messages } from "../../lib/i18n.js";
+import { sceneOptions } from "../../lib/sceneOptions.js";
+import DomainPicker from "./DomainPicker.js";
+import GeneratorResults from "./GeneratorResults.js";
 
-/** "Generate article" view: title-first or domain → topics → research → generate. */
+/** Which page of the generator is showing: the setup form or the topic/research results. */
 export type GeneratorView = "setup" | "results";
 
 interface ArticleGeneratorProps {
   onViewChange?: (view: GeneratorView) => void;
 }
 
+/** "Generate article" view: title-first or domain → topics → research → generate. */
 export default function ArticleGenerator({ onViewChange }: ArticleGeneratorProps) {
   const styles = useStore((s) => s.styles);
   const loadStyles = useStore((s) => s.loadStyles);
@@ -30,7 +34,7 @@ export default function ArticleGenerator({ onViewChange }: ArticleGeneratorProps
   const setResearch = useStore((s) => s.setResearch);
   const lang = useStore((s) => s.lang);
   const t = messages[lang];
-  const LENGTHS: { id: TargetLength; label: string }[] = [
+  const lengthOptions: Option<TargetLength>[] = [
     { id: "medium", label: t.lengthRegular },
     { id: "short", label: t.lengthShort },
     { id: "long", label: t.lengthLong },
@@ -48,12 +52,6 @@ export default function ArticleGenerator({ onViewChange }: ArticleGeneratorProps
   const [researchBusy, setResearchBusy] = useState(false);
   const [researchError, setResearchError] = useState<string | null>(null);
   const [generatingTopicId, setGeneratingTopicId] = useState<string | null>(null);
-  const [view, setView] = useState<GeneratorView>("setup");
-  const resultsHeadingRef = useRef<HTMLHeadingElement>(null);
-  const topicsButtonRef = useRef<HTMLButtonElement>(null);
-  const researchButtonRef = useRef<HTMLButtonElement>(null);
-  const revisitButtonRef = useRef<HTMLButtonElement>(null);
-  const resultsOriginRef = useRef<"topics" | "research" | "revisit">("topics");
 
   useEffect(() => {
     loadStyles();
@@ -64,16 +62,13 @@ export default function ArticleGenerator({ onViewChange }: ArticleGeneratorProps
     if (!domainId && domains[0]) setDomainId(domains[0].id);
   }, [domainId, domains]);
 
-  useEffect(() => {
-    if (view !== "results") return;
-    const frame = requestAnimationFrame(() => resultsHeadingRef.current?.focus());
-    return () => cancelAnimationFrame(frame);
-  }, [view]);
+  const results = useResultsView(onViewChange);
 
   const selectedDomain = useMemo(
     () => domains.find((d) => d.id === domainId),
     [domainId, domains]
   );
+  const domainArg = domainId === "custom" ? customDomain : "";
 
   async function loadTopics() {
     setTopicBusy(true);
@@ -81,10 +76,10 @@ export default function ArticleGenerator({ onViewChange }: ArticleGeneratorProps
     setTopicError(null);
     setResearchError(null);
     try {
-      const response = await fetchArticleTopics(domainId, domainId === "custom" ? customDomain : "", 6, lang);
+      const response = await fetchArticleTopics(domainId, domainArg, 6, lang);
       setTopics(response.topics);
       setResearch(response.research ?? null, "generate");
-      if (response.topics.length > 0 || response.research) openResults("topics");
+      if (response.topics.length > 0 || response.research) results.open("topics");
     } catch (e) {
       setTopicError((e as Error).message);
     } finally {
@@ -97,9 +92,9 @@ export default function ArticleGenerator({ onViewChange }: ArticleGeneratorProps
     setResearchBusy(true);
     setResearchError(null);
     try {
-      const bundle = await previewResearch(domainId, domainId === "custom" ? customDomain : "", "", lang);
+      const bundle = await previewResearch(domainId, domainArg, "", lang);
       setResearch(bundle, "generate");
-      openResults("research");
+      results.open("research");
     } catch (e) {
       setResearchError((e as Error).message);
     } finally {
@@ -107,8 +102,8 @@ export default function ArticleGenerator({ onViewChange }: ArticleGeneratorProps
     }
   }
 
-  function clearDomainState(nextDomainId: string) {
-    setDomainId(nextDomainId);
+  /** Topics, research and errors belong to one domain choice; drop them when it changes. */
+  function clearResults() {
     setTopics([]);
     setResearch(null, "generate");
     setTopicError(null);
@@ -117,24 +112,14 @@ export default function ArticleGenerator({ onViewChange }: ArticleGeneratorProps
     setTopicProgress(null);
   }
 
-  function openResults(origin: "topics" | "research" | "revisit") {
-    resultsOriginRef.current = origin;
-    setView("results");
-    onViewChange?.("results");
+  function selectDomain(nextDomainId: string) {
+    setDomainId(nextDomainId);
+    clearResults();
   }
 
-  function backToSetup() {
-    setView("setup");
-    onViewChange?.("setup");
-    requestAnimationFrame(() => {
-      const origin = resultsOriginRef.current;
-      const target = origin === "research"
-        ? researchButtonRef.current
-        : origin === "revisit"
-          ? revisitButtonRef.current
-          : topicsButtonRef.current;
-      target?.focus();
-    });
+  function changeCustomDomain(value: string) {
+    setCustomDomain(value);
+    clearResults();
   }
 
   async function generate(topic: TopicOptionDTO) {
@@ -142,7 +127,7 @@ export default function ArticleGenerator({ onViewChange }: ArticleGeneratorProps
     setTopicError(null);
     setResearchError(null);
     try {
-      await doGenerateArticle(domainId, domainId === "custom" ? customDomain : "", topic, styleId, sceneId, targetLength);
+      await doGenerateArticle(domainId, domainArg, topic, styleId, sceneId, targetLength);
     } finally {
       setGeneratingTopicId(null);
     }
@@ -166,112 +151,28 @@ export default function ArticleGenerator({ onViewChange }: ArticleGeneratorProps
 
   const customDisabled = domainId === "custom" && !customDomain.trim();
   const isGeneratingArticle = Boolean(generatingTopicId);
-  const previewItems = research?.items.slice(0, 5) ?? [];
   const hasResults = topics.length > 0 || Boolean(research);
-  const hasBothResultPanels = topics.length > 0 && Boolean(research);
-  const domainLabel = domainId === "custom" ? customDomain.trim() : selectedDomain?.name;
-  const styleLabel = styles.find((style) => style.id === styleId)?.name ?? t.defaultTone;
-  const sceneLabel = sceneOptions(t).find((scene) => scene.id === sceneId)?.label ?? t.sceneGeneral;
-  const lengthLabel = LENGTHS.find((length) => length.id === targetLength)?.label ?? t.lengthRegular;
+  const scenes = sceneOptions(t);
 
-  if (view === "results" && hasResults) {
+  if (results.view === "results" && hasResults) {
     return (
-      <div className="generator-results">
-        <header className="generator-results-head">
-          <button type="button" className="generator-back" onClick={backToSetup}>
-            <ArrowLeft />
-            {t.backToGeneratorSetup}
-          </button>
-          <div className="generator-results-copy">
-            <h1 ref={resultsHeadingRef} tabIndex={-1}>
-              {topics.length > 0 ? t.topicResultsTitle : t.researchHead}
-            </h1>
-            <p>{topics.length > 0 ? t.topicResultsSub : t.researchResultsSub}</p>
-          </div>
-          <ul className="generator-results-meta" aria-label={t.generatorOptionsSummary}>
-            {domainLabel && <li>{domainLabel}</li>}
-            <li>{styleLabel}</li>
-            <li>{sceneLabel}</li>
-            <li>{lengthLabel}</li>
-          </ul>
-        </header>
-
-        {generatingTopicId && <p className="generator-results-status" role="status">{t.generatingNote}</p>}
-        {topicError && <div className="error topic-error" role="alert">{topicError}</div>}
-        {researchError && <div className="error topic-error" role="alert">{researchError}</div>}
-
-        <div className={`generator-results-layout${hasBothResultPanels ? "" : " single"}`}>
-          {topics.length > 0 && (
-            <section className="generator-results-panel topic-results-panel" aria-labelledby="topic-results-heading">
-              <div className="generator-panel-head">
-                <h2 id="topic-results-heading">{t.topicResultsCount(topics.length)}</h2>
-              </div>
-              <div className="topic-grid">
-                {topics.map((topic) => (
-                  <article className="topic-card" key={topic.id}>
-                    <div>
-                      <h3>{topic.title}</h3>
-                      <p>{topic.angle}</p>
-                    </div>
-                    <div className="topic-meta">
-                      <span>{topic.audience}</span>
-                      {topic.keywords.slice(0, 3).map((kw) => (
-                        <span key={kw}>{kw}</span>
-                      ))}
-                    </div>
-                    <button
-                      type="button"
-                      className="primary"
-                      disabled={isGeneratingArticle}
-                      onClick={() => {
-                        void generate(topic);
-                      }}
-                    >
-                      {generatingTopicId === topic.id ? t.generating : t.generateArticleBtn}
-                    </button>
-                  </article>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {research && (
-            <section className="generator-results-panel research-results-panel" aria-labelledby="research-results-heading">
-              <div className="research-head generator-panel-head">
-                <h2 id="research-results-heading">{t.researchHead}</h2>
-                <span className="research-coverage">
-                  {t.researchCoverage(
-                    research.coverage.domestic,
-                    research.coverage.international,
-                    research.coverage.global,
-                    research.coverage.uniqueSources
-                  )}
-                </span>
-              </div>
-              {previewItems.length > 0 ? (
-                <div className="research-list">
-                  {previewItems.map((item: ResearchItemDTO) => (
-                    <a className="research-item" key={item.id} href={item.url} target="_blank" rel="noreferrer">
-                      <span>
-                        {item.sourceName} · {researchRegionLabel(item.region, t)} · {researchKindLabel(item.sourceKind, lang)}
-                      </span>
-                      {item.publishedAt && <time>{new Date(item.publishedAt).toLocaleDateString(t.dateLocale)}</time>}
-                      <strong>{item.title}</strong>
-                    </a>
-                  ))}
-                </div>
-              ) : (
-                <p className="generator-empty">{t.noResearchResults}</p>
-              )}
-              {research.unavailableSources.length > 0 && (
-                <p className="research-unavailable">
-                  {t.unavailableSources(research.unavailableSources.join(lang === "zh" ? "、" : ", "))}
-                </p>
-              )}
-            </section>
-          )}
-        </div>
-      </div>
+      <GeneratorResults
+        lang={lang}
+        topics={topics}
+        research={research}
+        settings={{
+          domain: domainId === "custom" ? customDomain.trim() : selectedDomain?.name,
+          style: styles.find((style) => style.id === styleId)?.name ?? t.defaultTone,
+          scene: scenes.find((scene) => scene.id === sceneId)?.label ?? t.sceneGeneral,
+          length: lengthOptions.find((length) => length.id === targetLength)?.label ?? t.lengthRegular,
+        }}
+        generatingTopicId={generatingTopicId}
+        topicError={topicError}
+        researchError={researchError}
+        headingRef={results.headingRef}
+        onBack={results.backToSetup}
+        onGenerate={generate}
+      />
     );
   }
 
@@ -279,8 +180,10 @@ export default function ArticleGenerator({ onViewChange }: ArticleGeneratorProps
     <div className="generator">
       <section className="step generator-compose">
         <div className="step-head">
-          <span className="badge lavender">1</span>
-          <h2>{t.genStep1}</h2>
+          <h2>
+            <span className="badge lavender">1</span>
+            {t.genStep1}
+          </h2>
         </div>
 
         <div className="title-generate">
@@ -311,119 +214,46 @@ export default function ArticleGenerator({ onViewChange }: ArticleGeneratorProps
           </button>
         </div>
 
-        <div
-          className="domain-grid"
-          role="group"
-          aria-label={lang === "zh" ? "文章领域" : "Article domain"}
-        >
-          {domains.map((d, index) => (
-            <button
-              key={d.id}
-              type="button"
-              className={`domain-card${domainId === d.id ? " active" : ""}`}
-              aria-pressed={domainId === d.id}
-              onClick={() => {
-                clearDomainState(d.id);
-              }}
-            >
-              <span className="domain-index" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
-              <span className="domain-name">{d.name}</span>
-              <small>{d.desc}</small>
-            </button>
-          ))}
-          <button
-            type="button"
-            className={`domain-card custom${domainId === "custom" ? " active" : ""}`}
-            aria-pressed={domainId === "custom"}
-            onClick={() => {
-              clearDomainState("custom");
-            }}
-          >
-            <span className="domain-index" aria-hidden="true">{String(domains.length + 1).padStart(2, "0")}</span>
-            <span className="domain-name">{t.customDomain}</span>
-            <small>{t.customDomainDesc}</small>
-          </button>
-        </div>
-        {domainId === "custom" && (
-          <>
-            <label className="sr-only" htmlFor="custom-domain-input">
-              {t.customDomain}
-            </label>
-            <input
-              id="custom-domain-input"
-              className="text-input"
-              value={customDomain}
-              onChange={(e) => {
-                setCustomDomain(e.target.value);
-                setTopics([]);
-                setResearch(null, "generate");
-                setTopicError(null);
-                setResearchError(null);
-                setGeneratingTopicId(null);
-                setTopicProgress(null);
-              }}
-              placeholder={t.customDomainPlaceholder}
-            />
-          </>
-        )}
+        <DomainPicker
+          lang={lang}
+          domains={domains}
+          domainId={domainId}
+          customDomain={customDomain}
+          onSelect={selectDomain}
+          onCustomDomainChange={changeCustomDomain}
+        />
       </section>
 
       <section className="step generator-desk">
         <div className="step-head">
-          <span className="badge mint">2</span>
-          <h2>{t.genStep2}</h2>
+          <h2>
+            <span className="badge mint">2</span>
+            {t.genStep2}
+          </h2>
         </div>
         <div className="generator-row">
           <label className="sr-only" htmlFor="article-style-select">
             {lang === "zh" ? "文章口吻" : "Article tone"}
           </label>
-          <select
+          <OptionSelect
             id="article-style-select"
-            className="styleselect compact"
             value={styleId}
-            onChange={(e) => setStyleId(e.target.value)}
-          >
-            <option value="">{t.defaultTone}</option>
-            {styles.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
+            options={styles.map((s) => ({ id: s.id, label: s.name }))}
+            emptyLabel={t.defaultTone}
+            onChange={setStyleId}
+          />
           <label className="sr-only" htmlFor="article-scene-select">
             {t.sceneLabel}
           </label>
-          <select
-            id="article-scene-select"
-            className="styleselect compact"
-            value={sceneId}
-            onChange={(e) => setSceneId(e.target.value as WritingSceneId)}
-          >
-            {sceneOptions(t).map((scene) => (
-              <option key={scene.id} value={scene.id}>
-                {scene.label}
-              </option>
-            ))}
-          </select>
-          <div
-            className="segment"
-            role="group"
+          <OptionSelect id="article-scene-select" value={sceneId} options={scenes} onChange={setSceneId} />
+          <SegmentedControl
             aria-label={lang === "zh" ? "文章长度" : "Article length"}
-          >
-            {LENGTHS.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={targetLength === item.id ? "active" : ""}
-                aria-pressed={targetLength === item.id}
-                onClick={() => setTargetLength(item.id)}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
+            options={lengthOptions}
+            value={targetLength}
+            onChange={setTargetLength}
+          />
           <button
-            ref={topicsButtonRef}
+            ref={results.topicsButtonRef}
             type="button"
             className="primary"
             disabled={topicBusy || customDisabled || isGeneratingArticle}
@@ -433,7 +263,7 @@ export default function ArticleGenerator({ onViewChange }: ArticleGeneratorProps
             {topicBusy ? t.generating : t.autoTopics}
           </button>
           <button
-            ref={researchButtonRef}
+            ref={results.researchButtonRef}
             type="button"
             className="primary"
             disabled={researchBusy || customDisabled || isGeneratingArticle}
@@ -444,10 +274,10 @@ export default function ArticleGenerator({ onViewChange }: ArticleGeneratorProps
           </button>
           {hasResults && (
             <button
-              ref={revisitButtonRef}
+              ref={results.revisitButtonRef}
               type="button"
               className="generator-revisit"
-              onClick={() => openResults("revisit")}
+              onClick={() => results.open("revisit")}
             >
               {t.viewGeneratedResults}
             </button>
@@ -468,28 +298,44 @@ export default function ArticleGenerator({ onViewChange }: ArticleGeneratorProps
   );
 }
 
-function sceneOptions(t: (typeof messages)["en"]): { id: WritingSceneId; label: string }[] {
-  return [
-    { id: "general", label: t.sceneGeneral },
-    { id: "wechat", label: t.sceneWechat },
-    { id: "business", label: t.sceneBusiness },
-    { id: "academic", label: t.sceneAcademic },
-    { id: "official", label: t.sceneOfficial },
-    { id: "social", label: t.sceneSocial },
-    { id: "technical", label: t.sceneTechnical },
-  ];
-}
+type ResultsOrigin = "topics" | "research" | "revisit";
 
-function researchKindLabel(kind: ResearchItemDTO["sourceKind"], lang: "en" | "zh"): string {
-  const labels = {
-    en: { paper: "paper", news: "news", article: "web article", comment: "public comment" },
-    zh: { paper: "论文", news: "新闻", article: "网页文章", comment: "公开评论" },
-  } as const;
-  return labels[lang][kind];
-}
+/**
+ * Setup/results navigation: focus the results heading on open and return focus
+ * to the button that opened the results when going back.
+ */
+function useResultsView(onViewChange: ((view: GeneratorView) => void) | undefined) {
+  const [view, setView] = useState<GeneratorView>("setup");
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const topicsButtonRef = useRef<HTMLButtonElement>(null);
+  const researchButtonRef = useRef<HTMLButtonElement>(null);
+  const revisitButtonRef = useRef<HTMLButtonElement>(null);
+  const originRef = useRef<ResultsOrigin>("topics");
 
-function researchRegionLabel(region: ResearchItemDTO["region"], t: (typeof messages)["en"]): string {
-  if (region === "domestic") return t.regionDomestic;
-  if (region === "international") return t.regionInternational;
-  return t.regionGlobal;
+  useEffect(() => {
+    if (view !== "results") return;
+    const frame = requestAnimationFrame(() => headingRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [view]);
+
+  function open(origin: ResultsOrigin) {
+    originRef.current = origin;
+    setView("results");
+    onViewChange?.("results");
+  }
+
+  function backToSetup() {
+    setView("setup");
+    onViewChange?.("setup");
+    requestAnimationFrame(() => {
+      const target = {
+        research: researchButtonRef,
+        revisit: revisitButtonRef,
+        topics: topicsButtonRef,
+      }[originRef.current].current;
+      target?.focus();
+    });
+  }
+
+  return { view, headingRef, topicsButtonRef, researchButtonRef, revisitButtonRef, open, backToSetup };
 }

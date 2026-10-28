@@ -1,0 +1,300 @@
+/* Decorative scenery: layers, vignette masks and ambient motion. Everything here is aria-hidden in the markup. */
+
+/* ---- hero vignette: a painted sheet; its deckled, dry-brush edge is the alpha of the baked background image ----
+   The per-scene mask-image and every layer's image and rectangle come from scenery-art.css (generated). */
+.hero-art {
+  position: relative;
+  aspect-ratio: 1200 / 780;
+  min-width: 0;
+  isolation: isolate;
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  animation: sceneIn 900ms ease-out both;
+}
+
+.hero-art::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: linear-gradient(90deg, transparent 49.4%, var(--fold-shade) 50%, var(--on-forest-wash) 50.6%, transparent 51.4%);
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+
+.l {
+  position: absolute;
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+  pointer-events: none;
+}
+
+.l-bg {
+  inset: 0;
+}
+
+/* ---- ambient motion (transform and opacity only; filters are static) ---- */
+.l-clouds-far,
+.l-clouds-near,
+.l-grass,
+.l-light,
+.l-smoke,
+.l-windmill,
+.l-kite,
+.sidebar-scene-glow,
+.sidebar-scene-grass,
+.sidebar-scene-leaves {
+  will-change: transform, opacity;
+}
+
+.l-clouds-far {
+  animation: drift calc(80s * var(--speed)) ease-in-out infinite alternate;
+}
+
+.l-clouds-near {
+  animation: drift calc(120s * var(--speed)) ease-in-out infinite alternate-reverse;
+}
+
+.l-grass {
+  z-index: 3;
+  transform-origin: 50% 100%;
+  animation: sway calc(7s * var(--speed)) ease-in-out infinite alternate;
+}
+
+.l-light {
+  z-index: 4;
+  mix-blend-mode: screen;
+  animation: shimmer calc(8s * var(--speed)) ease-in-out infinite alternate;
+}
+
+.l-smoke {
+  animation: smoke calc(9s * var(--speed)) ease-in-out infinite;
+}
+
+.l-windmill {
+  transform-origin: 50% 50%;
+  animation: spin 90s linear infinite;
+}
+
+.l-kite {
+  transform-origin: 50% 53%;
+  animation: bob calc(8s * var(--speed)) ease-in-out infinite alternate;
+}
+
+@keyframes sceneIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes drift {
+  from {
+    transform: translate3d(calc(var(--drift) * -1), 0, 0);
+  }
+  to {
+    transform: translate3d(var(--drift), 0, 0);
+  }
+}
+
+@keyframes sway {
+  from {
+    transform: skewX(calc(var(--sway) * -1));
+  }
+  to {
+    transform: skewX(var(--sway));
+  }
+}
+
+@keyframes shimmer {
+  from {
+    opacity: 0.55;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes smoke {
+  0% {
+    opacity: 0.2;
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    opacity: 1;
+    transform: translate3d(1%, -2%, 0);
+  }
+  100% {
+    opacity: 0.2;
+    transform: translate3d(2%, -4%, 0);
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes bob {
+  from {
+    transform: rotate(-3deg);
+  }
+  to {
+    transform: rotate(3deg);
+  }
+}
+
+@keyframes bobSoft {
+  from {
+    transform: rotate(-1.2deg);
+  }
+  to {
+    transform: rotate(1.2deg);
+  }
+}
+
+@keyframes smokeSoft {
+  from {
+    opacity: 0.35;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes twinkle {
+  from {
+    opacity: 0.35;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes leafSway {
+  from {
+    transform: rotate(calc(var(--sway) * -0.8));
+  }
+  to {
+    transform: rotate(calc(var(--sway) * 0.8));
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translate3d(0, var(--rise), 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/* Reduced tier: keep ambient life, drop the big or fast movement. */
+@media (prefers-reduced-motion: reduce) {
+  .l-windmill {
+    animation: none;
+  }
+
+  .l-kite {
+    animation-name: bobSoft;
+  }
+
+  .l-smoke {
+    animation-name: smokeSoft;
+  }
+}
+
+/* ---- sidebar forest edge (painted images) ---- */
+.sidebar-scene {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.sidebar-scene > span {
+  position: absolute;
+  right: 0;
+  left: 0;
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+}
+
+.sidebar-scene-art,
+.sidebar-scene-glow {
+  bottom: 0;
+  aspect-ratio: 236 / 300;
+}
+
+.sidebar-scene-grass {
+  bottom: 0;
+  aspect-ratio: 236 / 60;
+  transform-origin: 50% 100%;
+  animation: sway calc(6s * var(--speed)) ease-in-out infinite alternate;
+}
+
+.sidebar-scene-leaves {
+  top: 0;
+  aspect-ratio: 236 / 170;
+  transform-origin: 100% 0;
+  animation: leafSway calc(9s * var(--speed)) ease-in-out infinite alternate;
+}
+
+.sidebar-scene-glow {
+  animation: twinkle calc(4.5s * var(--speed)) ease-in-out infinite alternate;
+}
+
+/* ---- page backdrop: soft sky wash and a painted meadow foot ---- */
+.backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.backdrop-sky {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 460px;
+  background:
+    var(--backdrop-glow),
+    var(--backdrop-wash);
+}
+
+.backdrop-meadow {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 190px;
+  background-position: 50% 100%;
+  background-repeat: no-repeat;
+  background-size: auto 100%;
+}
+
+/* ---- panels and hero copy ease in on mount (opacity + short rise) ---- */
+.hero-copy,
+.step,
+.generator-results-head,
+.generator-results-panel,
+.score-panel,
+.gzh-panel,
+.banner,
+.page-head {
+  animation: rise 700ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+.step:nth-child(2),
+.generator-results-panel:nth-child(2) {
+  animation-delay: 110ms;
+}

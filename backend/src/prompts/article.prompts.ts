@@ -118,6 +118,10 @@ ${input.researchContext || "（暂无实时资料。不要编造新闻、论文�
 动笔前的内部整理（只执行，不输出）：
 ${planningRule}
 
+${input.qualityRepairInstruction
+  ? `本轮强制修复要求（只落实到成稿，不要提及审查过程）：\n${input.qualityRepairInstruction}\n`
+  : ""}
+
 写作要求：
 1. 开头直接进入问题或场景，不要说"在当今时代""随着发展"。
 2. 只使用上方参考资料能支撑的事实、数据、机构名、论文结论、网页文章和新闻事件。资料里没有的内容，不要写。
@@ -156,6 +160,10 @@ ${input.researchContext || "(no live material. Do not invent news, papers, or da
 
 Internal preparation before drafting (perform it, do not output it):
 ${planningRule}
+
+${input.qualityRepairInstruction
+  ? `Mandatory repair for this draft (apply it silently; do not mention the audit):\n${input.qualityRepairInstruction}\n`
+  : ""}
 
 Requirements:
 1. Open straight into the problem or scene; do not say "In today's era" or "With the development of".

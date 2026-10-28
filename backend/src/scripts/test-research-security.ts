@@ -182,6 +182,47 @@ assert.equal(directRequestHeaders.get("host"), "public.example", "caller Host mu
 
 await testNodeGlobalProxyWithPinnedTargets();
 
+let postBody = "";
+const postRequests: string[] = [];
+await assert.rejects(() => fetchBinaryWithOutboundPolicy(
+  "https://public.example/search",
+  {
+    label: "authenticated-post-test",
+    method: "POST",
+    body: JSON.stringify({ query: "night running" }),
+    headers: { Authorization: "Bearer fixture-key", "Content-Type": "application/json" },
+    maxRedirects: 0,
+    timeoutMs: 1_000,
+    maxBytes: 32,
+  },
+  {
+    lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+    nativeRequest: (url, options, onResponse) => {
+      postRequests.push(url.toString());
+      assert.equal(options.method, "POST");
+      assert.equal(options.servername, "public.example");
+      assert.equal((options.headers as Record<string, string>).Authorization, "Bearer fixture-key");
+      const handle = {
+        setHeader: () => undefined,
+        once: () => handle,
+        end: (body?: string) => {
+          postBody = body ?? "";
+          const responseBody = emptyBody();
+          onResponse({
+            statusCode: 307,
+            headers: { location: "https://other.example/key-trap" },
+            destroy: () => undefined,
+            [Symbol.asyncIterator]: () => responseBody[Symbol.asyncIterator](),
+          });
+        },
+      };
+      return handle;
+    },
+  }
+), /重定向次数过多/);
+assert.equal(postBody, JSON.stringify({ query: "night running" }));
+assert.deepEqual(postRequests, ["https://93.184.216.34/search"], "authenticated POST must never follow a redirect");
+
 const lookupCalls: string[] = [];
 const transportCalls: string[] = [];
 let redirectClosed = false;
@@ -328,15 +369,30 @@ assert.equal(yieldedChunks, 3, "stream reader must stop as soon as the cap is cr
 assert.equal(oversizedResponseClosed, true);
 
 const dangerousQuery = `topic & calc.exe | whoami > pwned.txt %PATH% $(touch /tmp/pwned) "quoted"`;
-assert.equal(buildMcporterInvocation(dangerousQuery, 6, "win32"), undefined);
+const windowsInvocation = buildMcporterInvocation(
+  dangerousQuery,
+  6,
+  "win32",
+  { executable: "C:\\node.exe", cliPath: "C:\\node_modules\\mcporter\\dist\\cli.js" }
+);
+assert.ok(windowsInvocation);
+assert.equal(windowsInvocation.executable, "C:\\node.exe");
+assert.equal(windowsInvocation.options.shell, false);
+assert.equal(windowsInvocation.args.length, 5);
+assert.equal(windowsInvocation.args[0], "C:\\node_modules\\mcporter\\dist\\cli.js");
+assert.equal(windowsInvocation.args[1], "call");
+assert.match(windowsInvocation.args[2], /& calc\.exe/);
+assert.match(windowsInvocation.args[2], /numResults: 6/);
+assert.deepEqual(windowsInvocation.args.slice(3), ["--output", "json"]);
 assert.equal(mcporterExecOptions("win32").shell, false);
 const unixInvocation = buildMcporterInvocation(dangerousQuery, 6, "linux");
 assert.ok(unixInvocation);
 assert.equal(unixInvocation.options.shell, false);
-assert.equal(unixInvocation.args.length, 2);
+assert.equal(unixInvocation.args.length, 4);
 assert.equal(unixInvocation.args[0], "call");
 assert.match(unixInvocation.args[1], /& calc\.exe/);
 assert.match(unixInvocation.args[1], /numResults: 6/);
+assert.deepEqual(unixInvocation.args.slice(2), ["--output", "json"]);
 
 const parsedPublisher = parseAgentReachSearchOutput(
   JSON.stringify({ results: [{ title: "A domestic source", url: "https://www.36kr.com/p/123" }] }),

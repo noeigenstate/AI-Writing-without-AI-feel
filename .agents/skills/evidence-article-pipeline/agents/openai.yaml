@@ -1,0 +1,4 @@
+interface:
+  display_name: "证据驱动文章流水线"
+  short_description: "Evidence-first article research, drafting, and validation"
+  default_prompt: "使用 $evidence-article-pipeline 完成这篇文章：先检索到证据饱和，建立带来源和图片的线索图，再成文并通过全部质量门禁。"

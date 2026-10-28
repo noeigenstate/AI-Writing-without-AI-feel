@@ -10,6 +10,8 @@ const client = new OpenAI({
 export interface ChatOptions {
   system?: string;
   temperature?: number;
+  /** Per-request transport timeout; omit to use the SDK default. */
+  timeoutMs?: number;
   /**
    * Disable provider-side reasoning for strict structured-output calls.
    *
@@ -28,19 +30,19 @@ export interface ChatOptions {
  * @returns The model's reply, or "" if empty.
  */
 export async function chat(prompt: string, opts: ChatOptions = {}): Promise<string> {
-  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
-  if (opts.system) messages.push({ role: "system", content: opts.system });
-  messages.push({ role: "user", content: prompt });
-
-  const res = await client.chat.completions.create({
-    model: config.llm.model,
-    temperature: opts.temperature ?? config.llm.temperature,
-    messages,
-    stream: false,
-    ...deepSeekOptions(opts),
-  } as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming & Record<string, unknown>);
+  const res = await client.chat.completions.create(
+    {
+      ...baseRequest(prompt, opts),
+      stream: false,
+      ...deepSeekOptions(opts),
+    } as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming & Record<string, unknown>,
+    requestOptions(opts)
+  );
   return res.choices[0]?.message?.content ?? "";
 }
+
+/** Signature of {@link chat}; services take it as a parameter so tests can inject a stub. */
+export type ChatFn = typeof chat;
 
 /**
  * Stream a completion, invoking `onDelta` for each chunk.
@@ -55,17 +57,14 @@ export async function chatStream(
   onDelta: (chunk: string) => void,
   opts: ChatOptions = {}
 ): Promise<string> {
-  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
-  if (opts.system) messages.push({ role: "system", content: opts.system });
-  messages.push({ role: "user", content: prompt });
-
-  const stream = await client.chat.completions.create({
-    model: config.llm.model,
-    temperature: opts.temperature ?? config.llm.temperature,
-    messages,
-    stream: true,
-    ...deepSeekOptions(opts),
-  } as OpenAI.Chat.ChatCompletionCreateParamsStreaming & Record<string, unknown>);
+  const stream = await client.chat.completions.create(
+    {
+      ...baseRequest(prompt, opts),
+      stream: true,
+      ...deepSeekOptions(opts),
+    } as OpenAI.Chat.ChatCompletionCreateParamsStreaming & Record<string, unknown>,
+    requestOptions(opts)
+  );
 
   let full = "";
   for await (const part of stream) {
@@ -92,6 +91,18 @@ export async function health(): Promise<{ ok: boolean; model: string; error?: st
   }
 }
 
+/** Model, temperature and messages shared by streaming and non-streaming calls. */
+function baseRequest(prompt: string, opts: ChatOptions) {
+  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
+  if (opts.system) messages.push({ role: "system", content: opts.system });
+  messages.push({ role: "user", content: prompt });
+  return { model: config.llm.model, temperature: opts.temperature ?? config.llm.temperature, messages };
+}
+
+function requestOptions(opts: ChatOptions): { timeout: number } | undefined {
+  return opts.timeoutMs ? { timeout: opts.timeoutMs } : undefined;
+}
+
 /** Values that omit an optional extra; local servers usually reject these params. */
 const OMIT = new Set(["", "off", "none", "false", "0"]);
 
@@ -107,15 +118,14 @@ function deepSeekOptions(opts: ChatOptions = {}): Record<string, unknown> {
   const extra: Record<string, unknown> = {};
   const { thinkingType, reasoningEffort } = config.llm;
   const normalizedThinking = thinkingType.trim().toLowerCase();
+  const thinkingConfigured = Boolean(thinkingType) && !OMIT.has(normalizedThinking);
   if (opts.disableThinking) {
     // Only send this provider-specific override when thinking was explicitly
     // configured. Generic OpenAI-compatible servers otherwise see no extra.
-    if (thinkingType && !OMIT.has(normalizedThinking)) {
-      extra.thinking = { type: "disabled" };
-    }
+    if (thinkingConfigured) extra.thinking = { type: "disabled" };
     return extra;
   }
-  if (thinkingType && !OMIT.has(normalizedThinking)) extra.thinking = { type: thinkingType };
+  if (thinkingConfigured) extra.thinking = { type: thinkingType };
   // An explicit `disabled` must reach providers whose default is thinking-on.
   // It also makes a reasoning-effort hint contradictory, so omit that hint.
   if (

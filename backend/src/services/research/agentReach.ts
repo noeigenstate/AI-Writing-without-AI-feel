@@ -1,17 +1,25 @@
 import { execFile, type ExecFileOptionsWithStringEncoding } from "node:child_process";
+import { existsSync } from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { cached } from "./cache.js";
 import { inferPublisherName, inferPublisherRegion } from "./rss.js";
 import { normalizePublicSourceUrl } from "./networkSafety.js";
+import { asString, isRecord, normalizeDate, tryParseJson } from "./parse.js";
 import type { ResearchItem, ResearchSourceKind } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 const SOURCE_ID = "agent-reach-exa";
 
 export interface McporterInvocation {
-  executable: "mcporter";
-  args: readonly ["call", string];
+  executable: string;
+  args: readonly string[];
   options: ExecFileOptionsWithStringEncoding;
+}
+
+export interface McporterRuntime {
+  executable: string;
+  cliPath?: string;
 }
 
 interface AgentReachRawResult {
@@ -32,11 +40,9 @@ export function parseAgentReachSearchOutput(
   query: string,
   sourceKind: Extract<ResearchSourceKind, "article" | "comment"> = "article"
 ): ResearchItem[] {
-  const parsed = parseUnknownJson(output);
+  const parsed = tryParseJson(output);
   const results = findResultArray(parsed);
-  if (!results) {
-    return [];
-  }
+  if (!results) return parseTextResults(agentReachTextPayload(parsed) || output, query, sourceKind);
 
   return results
     .map((result) => normalizeResult(result, query, sourceKind))
@@ -49,20 +55,13 @@ export function fetchAgentReachSearch(
   limit = 6,
   sourceKind: Extract<ResearchSourceKind, "article" | "comment"> = "article"
 ): Promise<ResearchItem[]> {
-  // Agent-Reach currently exposes mcporter as a command shim on Windows. Node
-  // cannot execute that shim without cmd.exe, and passing user text through a
-  // shell is not an acceptable boundary, so this optional fallback is disabled.
-  if (process.platform === "win32") {
-    return Promise.resolve([]);
-  }
-
   const cleanQuery = cleanText(query, 240);
   if (!cleanQuery) {
     return Promise.resolve([]);
   }
-  const safeLimit = Math.max(1, Math.min(20, Math.trunc(Number.isFinite(limit) ? limit : 6)));
+  const safeLimit = clampResultLimit(limit);
 
-  return cached(`agent-reach:${cleanQuery}:${safeLimit}`, 20 * 60 * 1000, async () => {
+  return cached(`agent-reach:${sourceKind}:${cleanQuery}:${safeLimit}`, 20 * 60 * 1000, async () => {
     const invocation = buildMcporterInvocation(cleanQuery, safeLimit);
     if (!invocation) {
       return [];
@@ -77,26 +76,36 @@ export function fetchAgentReachSearch(
   });
 }
 
-/** Build a shell-free mcporter invocation, or disable this fallback on Windows. */
+/** Build a shell-free mcporter invocation, using its JS entry point on Windows. */
 export function buildMcporterInvocation(
   query: string,
   limit = 6,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  runtime?: McporterRuntime
 ): McporterInvocation | undefined {
-  if (platform === "win32") {
-    return undefined;
-  }
   const cleanQuery = cleanText(query, 240);
   if (!cleanQuery) {
     return undefined;
   }
-  const safeLimit = Math.max(1, Math.min(20, Math.trunc(Number.isFinite(limit) ? limit : 6)));
+  const safeLimit = clampResultLimit(limit);
   const expression = `exa.web_search_exa(query: ${JSON.stringify(cleanQuery)}, numResults: ${safeLimit})`;
+  const resolvedRuntime = runtime ?? (platform === "win32" ? resolveWindowsMcporterRuntime() : { executable: "mcporter" });
+  if (!resolvedRuntime) return undefined;
   return {
-    executable: "mcporter",
-    args: ["call", expression],
+    executable: resolvedRuntime.executable,
+    args: [
+      ...(resolvedRuntime.cliPath ? [resolvedRuntime.cliPath] : []),
+      "call",
+      expression,
+      "--output",
+      "json",
+    ],
     options: mcporterExecOptions(platform),
   };
+}
+
+function clampResultLimit(limit: number): number {
+  return Math.max(1, Math.min(20, Math.trunc(Number.isFinite(limit) ? limit : 6)));
 }
 
 export function mcporterExecOptions(_platform: NodeJS.Platform = process.platform): ExecFileOptionsWithStringEncoding {
@@ -125,7 +134,8 @@ function normalizeResult(
     return undefined;
   }
 
-  const excerpt = cleanText(asString(result.text), 280);
+  const content = cleanText(asString(result.text), 8_000);
+  const excerpt = cleanText(content, 600);
   const summary =
     cleanText(asString(result.summary), 700) ||
     cleanText(asString(result.snippet), 700) ||
@@ -143,11 +153,61 @@ function normalizeResult(
     title,
     summary,
     excerpt: excerpt || undefined,
+    content: content || undefined,
     url,
     publishedAt,
     authors: normalizeAuthors(result.author ?? result.authors),
     query,
   };
+}
+
+function parseTextResults(
+  value: string,
+  query: string,
+  sourceKind: Extract<ResearchSourceKind, "article" | "comment">
+): ResearchItem[] {
+  if (!value.trim()) return [];
+  return value
+    .split(/\r?\n---\r?\n/gu)
+    .map((block) => {
+      const title = metadataValue(block.match(/^Title:\s*(.+)$/imu)?.[1]);
+      const url = block.match(/^URL:\s*(\S+)$/imu)?.[1]?.trim() ?? "";
+      const publishedDate = metadataValue(block.match(/^Published:\s*(.+)$/imu)?.[1]);
+      const author = metadataValue(block.match(/^Author:\s*(.+)$/imu)?.[1]);
+      const highlightsAt = block.search(/^Highlights:\s*$/imu);
+      const text = highlightsAt >= 0
+        ? block.slice(highlightsAt).replace(/^Highlights:\s*/iu, "").trim()
+        : "";
+      return normalizeResult({ title, url, publishedDate, author, text }, query, sourceKind);
+    })
+    .filter((item): item is ResearchItem => Boolean(item));
+}
+
+function metadataValue(value: string | undefined): string {
+  const clean = value?.trim() ?? "";
+  return /^(?:n\/?a|null|none|unknown)$/iu.test(clean) ? "" : clean;
+}
+
+function agentReachTextPayload(value: unknown): string {
+  if (!isRecord(value) || !Array.isArray(value.content)) return "";
+  return value.content
+    .filter(isRecord)
+    .map((entry) => asString(entry.text))
+    .filter(Boolean)
+    .join("\n---\n");
+}
+
+function resolveWindowsMcporterRuntime(): McporterRuntime | undefined {
+  const candidateDirectories = new Set<string>([
+    dirname(process.execPath),
+    ...(process.env.PATH ?? "").split(delimiter).filter(Boolean),
+    ...(process.env.APPDATA ? [join(process.env.APPDATA, "npm")] : []),
+  ]);
+  for (const directory of candidateDirectories) {
+    const cliPath = join(directory, "node_modules", "mcporter", "dist", "cli.js");
+    if (existsSync(cliPath)) return { executable: process.execPath, cliPath };
+  }
+  return undefined;
 }
 
 function findResultArray(value: unknown): unknown[] | undefined {
@@ -175,7 +235,7 @@ function findResultArray(value: unknown): unknown[] | undefined {
       if (!text) {
         continue;
       }
-      const nested = findResultArray(parseUnknownJson(text));
+      const nested = findResultArray(tryParseJson(text));
       if (nested) {
         return nested;
       }
@@ -183,22 +243,6 @@ function findResultArray(value: unknown): unknown[] | undefined {
   }
 
   return undefined;
-}
-
-function parseUnknownJson(value: string): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return undefined;
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function asString(value: unknown): string {
-  return typeof value === "string" ? value : "";
 }
 
 function cleanText(value: string, maxLength: number): string {
@@ -211,15 +255,6 @@ function cleanText(value: string, maxLength: number): string {
     .trim();
 
   return text.length <= maxLength ? text : `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
-}
-
-function normalizeDate(value: string): string {
-  if (!value) {
-    return "";
-  }
-
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
 }
 
 function normalizeAuthors(value: unknown): string[] {

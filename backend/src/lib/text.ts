@@ -84,6 +84,61 @@ export function stringField(value: unknown): string {
 }
 
 /**
+ * Type guard: whether an unknown request value is one of a fixed set of string literals.
+ *
+ * @param values The allowed values (typically an `as const` tuple).
+ * @param value Any value, typically from a request body.
+ * @returns True when `value` is a string equal to one of `values`.
+ */
+export function isOneOf<T extends string>(values: readonly T[], value: unknown): value is T {
+  return typeof value === "string" && values.some((allowed) => allowed === value);
+}
+
+/** True when the text contains at least one Han character. */
+export function containsHan(value: string): boolean {
+  return /[㐀-鿿]/u.test(value);
+}
+
+/**
+ * Flatten control characters and whitespace in an untrusted value and clip it.
+ *
+ * @param value Any value, typically a field of model JSON output.
+ * @param maxLength Maximum length of the result (no ellipsis).
+ * @returns The single-line text, or "" if the value is not a string.
+ */
+export function cleanLine(value: unknown, maxLength: number): string {
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/[\u0000-\u001f\u007f]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
+/**
+ * Clean each string of an untrusted array and keep the first spelling of each, ignoring case.
+ *
+ * @param value Any value; non-arrays yield [] and non-string entries are skipped.
+ * @param limit Maximum number of lines returned.
+ * @param maxLength Maximum length of each line.
+ * @returns The unique, non-empty lines in their original order.
+ */
+export function uniqueLines(value: unknown, limit: number, maxLength: number): string[] {
+  if (!Array.isArray(value)) return [];
+  const output: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const clean = cleanLine(entry, maxLength);
+    const key = clean.toLocaleLowerCase();
+    if (!clean || seen.has(key)) continue;
+    seen.add(key);
+    output.push(clean);
+    if (output.length >= limit) break;
+  }
+  return output;
+}
+
+/**
  * Build a short, URL/id-safe slug from arbitrary (incl. CJK) text.
  *
  * @param value Source text.

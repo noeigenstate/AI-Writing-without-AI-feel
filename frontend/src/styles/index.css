@@ -1,0 +1,20 @@
+/* Hallmark · checked: 2026-10-27 · genre: playful (inferred)
+ * floor: 0 FAIL · fixed: 7a, 39a, 39b, 40, 48, 49a, 54, 56, 67, F19, F24, F26 · structural: 24b printed as notes
+ * built: the project · redesign: polish · copy: verbatim · v2.0.0 */
+/* Hallmark · reworded "Upload the Word file to rewrite" to "1 Upload the Word file to rewrite" · 54 · the step number moved from an eyebrow beside the heading into the heading itself; the words are unchanged */
+/* Hallmark · reworded "Choose a rewrite style" to "2 Choose a rewrite style" · 54 · the step number moved from an eyebrow beside the heading into the heading itself; the words are unchanged */
+/* Hallmark · reworded "Enter a title or pick a domain" to "1 Enter a title or pick a domain" · 54 · the step number moved from an eyebrow beside the heading into the heading itself; the words are unchanged */
+/* Hallmark · reworded "Generate and pick a topic" to "2 Generate and pick a topic" · 54 · the step number moved from an eyebrow beside the heading into the heading itself; the words are unchanged */
+/* Hallmark · reworded "Set the story in motion" to "1 Set the story in motion" · 54 · the step number moved from an eyebrow beside the heading into the heading itself; the words are unchanged */
+/* Hallmark · reworded "Choose the narrative" to "2 Choose the narrative" · 54 · the step number moved from an eyebrow beside the heading into the heading itself; the words are unchanged */
+/* Hallmark · waive 38iii · the flagged selector .title-generate .text-input is a title field with no heading around it · the title input styles its own typed text and is not a heading in any markup */
+/* Hallmark · dismissed 28a · the lazy-loaded image is a source figure inside the document galley, far below the first screen, never the largest paint of any page */
+/* Hallmark · answered F7 · the repeated card recipe is deliberate: every working surface is one cream paper card, and the hero scenery is the user's own art direction, so repetition keeps the workshop calm */
+/* AI写作 — sunlit hand-painted picture-book world. Order matters: tokens first, responsive last. */
+@import "./tokens.css";
+@import "./shell.css";
+@import "./scenery.css";
+@import "./scenery-art.css";
+@import "./surfaces.css";
+@import "./editor.css";
+@import "./responsive.css";

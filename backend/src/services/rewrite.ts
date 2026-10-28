@@ -1,4 +1,4 @@
-import { chat } from "./llm.js";
+import { chat, type ChatFn } from "./llm.js";
 import {
   styleProfilePrompt,
   rewriteDocPrompt,
@@ -7,8 +7,6 @@ import {
 } from "../prompts/rewrite.prompts.js";
 import { parseJson } from "../lib/json.js";
 import type { Lang } from "../core/i18n.js";
-
-type ChatFn = typeof chat;
 
 /**
  * Distill a style profile from sample text.

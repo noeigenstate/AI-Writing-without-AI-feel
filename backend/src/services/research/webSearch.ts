@@ -1,5 +1,6 @@
 import { execFile, type ExecFileOptionsWithStringEncoding } from "node:child_process";
 import { promisify } from "node:util";
+import { containsHan } from "../../lib/text.js";
 import { fetchAgentReachSearch } from "./agentReach.js";
 import { cached } from "./cache.js";
 import { fetchTextWithTimeout } from "./http.js";
@@ -7,6 +8,8 @@ import {
   fetchTextWithOutboundPolicy,
   normalizePublicSourceUrl,
 } from "./networkSafety.js";
+import { asString, isRecord, normalizeDate, tryParseJson } from "./parse.js";
+import { createConcurrencyGate } from "./rateLimit.js";
 import {
   inferPublisherName,
   inferPublisherRegion,
@@ -35,11 +38,11 @@ const GOOGLE_NEWS_RPC_COOLDOWN_MS = 60_000;
 const GOOGLE_NEWS_RESOLVER_START_INTERVAL_MS = 400;
 const HACKER_NEWS_NAME = "Hacker News";
 const EXA_API_URL = "https://api.exa.ai/search";
+const DEEPSEEK_SEARCH_URL = "https://api.deepseek.com/v1/tools/search";
 let mcporterAvailablePromise: Promise<boolean> | undefined;
-let googleNewsResolverActive = 0;
 let googleNewsResolverNextStartAt = 0;
 let googleNewsRpcCooldownUntil = 0;
-const googleNewsResolverWaiters: (() => void)[] = [];
+const googleNewsResolverGate = createConcurrencyGate(GOOGLE_NEWS_RESOLVER_CONCURRENCY);
 export type GoogleNewsMarket = "cn" | "international";
 
 export interface BroadWebSearchResult {
@@ -49,6 +52,7 @@ export interface BroadWebSearchResult {
 type ProviderFailureCategory = "timed out" | "rate limited" | "authentication unavailable" | "unavailable";
 
 const BROAD_WEB_PROVIDER_LABELS = [
+  "DeepSeek search",
   "Exa article search",
   "Exa comment search",
   "Agent-Reach article search",
@@ -152,7 +156,7 @@ export interface GoogleNewsPublisherSearchCandidate {
 /** Build a Google News RSS query URL for a search market (not a publisher region). */
 export function googleNewsSearchUrl(
   query: string,
-  market: GoogleNewsMarket = containsCjk(query) ? "cn" : "international"
+  market: GoogleNewsMarket = containsHan(query) ? "cn" : "international"
 ): string {
   const domesticMarket = market === "cn";
   const params = new URLSearchParams({
@@ -339,10 +343,10 @@ export function parseGoogleNewsResolverRpcResponse(value: string): string | unde
   for (const line of lines) {
     const candidate = line.trim();
     if (!candidate.startsWith("[")) continue;
-    const parsed = parseJson(candidate);
+    const parsed = tryParseJson(candidate);
     const embedded = googleNewsResolverEmbeddedPayload(parsed);
     if (!embedded) continue;
-    const decoded = parseJson(embedded);
+    const decoded = tryParseJson(embedded);
     if (!Array.isArray(decoded) || decoded[0] !== "garturlres") continue;
     const normalized = normalizeGoogleNewsPublisherUrl(asString(decoded[1]));
     if (normalized) return normalized;
@@ -440,57 +444,7 @@ async function resolveOpaqueGoogleNewsArticleUrl(
 ): Promise<string> {
   let rpcResolvedUrl: string | undefined;
   try {
-    const usesDefaultPageTransport = !dependencies.fetchPage;
-    const usesDefaultRpcTransport = !dependencies.postRpc;
-    if (usesDefaultPageTransport && googleNewsRpcCooldownUntil > Date.now()) {
-      return resolveGoogleNewsPublisherSearchFallback(
-        wrapperUrl,
-        publisherContext,
-        dependencies
-      );
-    }
-    const fetchPage = dependencies.fetchPage ?? defaultGoogleNewsPageFetch;
-    // The RSS wrapper serves a smaller intermediary document without the
-    // signed resolver attributes. Fetch Google's fixed canonical article page.
-    const page = await fetchPage(`https://${GOOGLE_NEWS_HOSTNAME}/articles/${articleId}`);
-    if (usesDefaultPageTransport && page.status === 429) {
-      googleNewsRpcCooldownUntil = Date.now() + GOOGLE_NEWS_RPC_COOLDOWN_MS;
-    }
-    if (!page.ok) return resolveGoogleNewsPublisherSearchFallback(
-      wrapperUrl,
-      publisherContext,
-      dependencies
-    );
-
-    const redirectedPublisher = normalizeGoogleNewsPublisherUrl(page.url ?? "");
-    if (redirectedPublisher) return redirectedPublisher;
-
-    const metadata = parseGoogleNewsResolverPage(page.text, articleId);
-    if (!metadata) return resolveGoogleNewsPublisherSearchFallback(
-      wrapperUrl,
-      publisherContext,
-      dependencies
-    );
-    const body = buildGoogleNewsResolverRpcBody(articleId, metadata);
-    if (!body) return resolveGoogleNewsPublisherSearchFallback(
-      wrapperUrl,
-      publisherContext,
-      dependencies
-    );
-
-    if (usesDefaultRpcTransport && googleNewsRpcCooldownUntil > Date.now()) {
-      return resolveGoogleNewsPublisherSearchFallback(
-        wrapperUrl,
-        publisherContext,
-        dependencies
-      );
-    }
-    const postRpc = dependencies.postRpc ?? defaultGoogleNewsRpcFetch;
-    const response = await postRpc({ articleId, ...metadata, body });
-    if (usesDefaultRpcTransport && response.status === 429) {
-      googleNewsRpcCooldownUntil = Date.now() + GOOGLE_NEWS_RPC_COOLDOWN_MS;
-    }
-    if (response.ok) rpcResolvedUrl = parseGoogleNewsResolverRpcResponse(response.text);
+    rpcResolvedUrl = await resolveGoogleNewsArticleViaRpc(articleId, dependencies);
   } catch {
     // A bounded publisher search below can still recover an exact source URL.
   }
@@ -499,6 +453,44 @@ async function resolveOpaqueGoogleNewsArticleUrl(
     publisherContext,
     dependencies
   );
+}
+
+/** Follow Google's signed page/RPC chain; undefined defers to the publisher search fallback. */
+async function resolveGoogleNewsArticleViaRpc(
+  articleId: string,
+  dependencies: GoogleNewsResolverDependencies
+): Promise<string | undefined> {
+  const usesDefaultPageTransport = !dependencies.fetchPage;
+  const usesDefaultRpcTransport = !dependencies.postRpc;
+  if (usesDefaultPageTransport && isGoogleNewsRpcCoolingDown()) return undefined;
+  const fetchPage = dependencies.fetchPage ?? defaultGoogleNewsPageFetch;
+  // The RSS wrapper serves a smaller intermediary document without the
+  // signed resolver attributes. Fetch Google's fixed canonical article page.
+  const page = await fetchPage(`https://${GOOGLE_NEWS_HOSTNAME}/articles/${articleId}`);
+  if (usesDefaultPageTransport) noteGoogleNewsRateLimit(page.status);
+  if (!page.ok) return undefined;
+
+  const redirectedPublisher = normalizeGoogleNewsPublisherUrl(page.url ?? "");
+  if (redirectedPublisher) return redirectedPublisher;
+
+  const metadata = parseGoogleNewsResolverPage(page.text, articleId);
+  if (!metadata) return undefined;
+  const body = buildGoogleNewsResolverRpcBody(articleId, metadata);
+  if (!body) return undefined;
+
+  if (usesDefaultRpcTransport && isGoogleNewsRpcCoolingDown()) return undefined;
+  const postRpc = dependencies.postRpc ?? defaultGoogleNewsRpcFetch;
+  const response = await postRpc({ articleId, ...metadata, body });
+  if (usesDefaultRpcTransport) noteGoogleNewsRateLimit(response.status);
+  return response.ok ? parseGoogleNewsResolverRpcResponse(response.text) : undefined;
+}
+
+function isGoogleNewsRpcCoolingDown(): boolean {
+  return googleNewsRpcCooldownUntil > Date.now();
+}
+
+function noteGoogleNewsRateLimit(status: number): void {
+  if (status === 429) googleNewsRpcCooldownUntil = Date.now() + GOOGLE_NEWS_RPC_COOLDOWN_MS;
 }
 
 function hasInjectedGoogleNewsResolverDependency(
@@ -512,12 +504,11 @@ function hasInjectedGoogleNewsResolverDependency(
 }
 
 /** Share two resolver slots across all simultaneous CN/international searches. */
-async function withGoogleNewsResolverLimit<T>(
+function withGoogleNewsResolverLimit<T>(
   task: () => Promise<T>,
   throttleStarts: boolean
 ): Promise<T> {
-  await acquireGoogleNewsResolverSlot();
-  try {
+  return googleNewsResolverGate(async () => {
     if (throttleStarts) {
       const now = Date.now();
       const startAt = Math.max(now, googleNewsResolverNextStartAt);
@@ -527,28 +518,8 @@ async function withGoogleNewsResolverLimit<T>(
         await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
       }
     }
-    return await task();
-  } finally {
-    releaseGoogleNewsResolverSlot();
-  }
-}
-
-function acquireGoogleNewsResolverSlot(): Promise<void> {
-  if (googleNewsResolverActive < GOOGLE_NEWS_RESOLVER_CONCURRENCY) {
-    googleNewsResolverActive += 1;
-    return Promise.resolve();
-  }
-  return new Promise<void>((resolve) => {
-    googleNewsResolverWaiters.push(() => {
-      googleNewsResolverActive += 1;
-      resolve();
-    });
+    return task();
   });
-}
-
-function releaseGoogleNewsResolverSlot(): void {
-  googleNewsResolverActive = Math.max(0, googleNewsResolverActive - 1);
-  googleNewsResolverWaiters.shift()?.();
 }
 
 /** Build an exact, bounded lookup query from the Google News title and outlet. */
@@ -569,46 +540,54 @@ export function googleNewsPublisherSearchQuery(
 export function parseDuckDuckGoPublisherSearchResults(
   html: string
 ): GoogleNewsPublisherSearchCandidate[] {
-  if (!html || html.length > GOOGLE_NEWS_MAX_SEARCH_CHARACTERS) return [];
-
-  const results: GoogleNewsPublisherSearchCandidate[] = [];
-  const seen = new Set<string>();
-  const anchorPattern = /<a\b([^>]{0,4096})>([\s\S]{0,1200}?)<\/a>/giu;
-  let inspected = 0;
-  for (const match of html.matchAll(anchorPattern)) {
-    inspected += 1;
-    if (inspected > 80 || results.length >= GOOGLE_NEWS_MAX_SEARCH_RESULTS) break;
-    const attributes = match[1] ?? "";
-    const className = htmlAttribute(attributes, "class");
-    if (!/(?:^|\s)result__a(?:\s|$)/u.test(className)) continue;
-    const href = htmlAttribute(attributes, "href");
-    const url = duckDuckGoResultTarget(href);
-    const title = cleanText(match[2] ?? "", 240);
-    if (!url || !title || seen.has(url)) continue;
-    seen.add(url);
-    results.push({ title, url, sourceName: inferPublisherName(url) });
-  }
-  return results;
+  return collectPublisherSearchAnchors(
+    html,
+    /<a\b([^>]{0,4096})>([\s\S]{0,1200}?)<\/a>/giu,
+    80,
+    (attributes, body) => {
+      const className = htmlAttribute(attributes, "class");
+      if (!/(?:^|\s)result__a(?:\s|$)/u.test(className)) return undefined;
+      const href = htmlAttribute(attributes, "href");
+      return { url: duckDuckGoResultTarget(href), title: cleanText(body, 240) };
+    }
+  );
 }
 
 /** Parse Yahoo result-title anchors and only their explicit encoded `RU` target. */
 export function parseYahooPublisherSearchResults(
   html: string
 ): GoogleNewsPublisherSearchCandidate[] {
+  return collectPublisherSearchAnchors(
+    html,
+    /<a\b([^>]{0,8192})>([\s\S]{0,6000}?)<\/a>/giu,
+    160,
+    (attributes, body) => {
+      const titleMatch = body.match(/<h3\b[^>]{0,2048}>([\s\S]{0,1600}?)<\/h3>/iu);
+      if (!titleMatch) return undefined;
+      const url = yahooResultTarget(htmlAttribute(attributes, "href"));
+      return { url, title: cleanText(titleMatch[1] ?? "", 240) };
+    }
+  );
+}
+
+/** Scan a bounded number of result anchors, keeping unique public targets in page order. */
+function collectPublisherSearchAnchors(
+  html: string,
+  anchorPattern: RegExp,
+  maxInspected: number,
+  readAnchor: (attributes: string, body: string) => { url?: string; title: string } | undefined
+): GoogleNewsPublisherSearchCandidate[] {
   if (!html || html.length > GOOGLE_NEWS_MAX_SEARCH_CHARACTERS) return [];
 
   const results: GoogleNewsPublisherSearchCandidate[] = [];
   const seen = new Set<string>();
-  const anchorPattern = /<a\b([^>]{0,8192})>([\s\S]{0,6000}?)<\/a>/giu;
   let inspected = 0;
   for (const match of html.matchAll(anchorPattern)) {
     inspected += 1;
-    if (inspected > 160 || results.length >= GOOGLE_NEWS_MAX_SEARCH_RESULTS) break;
-    const body = match[2] ?? "";
-    const titleMatch = body.match(/<h3\b[^>]{0,2048}>([\s\S]{0,1600}?)<\/h3>/iu);
-    if (!titleMatch) continue;
-    const url = yahooResultTarget(htmlAttribute(match[1] ?? "", "href"));
-    const title = cleanText(titleMatch[1] ?? "", 240);
+    if (inspected > maxInspected || results.length >= GOOGLE_NEWS_MAX_SEARCH_RESULTS) break;
+    const anchor = readAnchor(match[1] ?? "", match[2] ?? "");
+    if (!anchor) continue;
+    const { url, title } = anchor;
     if (!url || !title || seen.has(url)) continue;
     seen.add(url);
     results.push({ title, url, sourceName: inferPublisherName(url) });
@@ -681,38 +660,20 @@ async function resolveGoogleNewsPublisherWithDefaultSearch(
   context: GoogleNewsPublisherContext
 ): Promise<string | undefined> {
   const apiKey = process.env.EXA_API_KEY?.trim();
-  if (apiKey) {
+  // Tried in order: keyed Exa, two fixed keyless public indexes, then the
+  // optional Agent-Reach install. A failed provider just moves to the next one.
+  const searches: (() => Promise<readonly GoogleNewsPublisherSearchCandidate[]>)[] = [
+    ...(apiKey ? [() => fetchDirectExaSearch(query, "article", 6, apiKey)] : []),
+    () => fetchDuckDuckGoPublisherSearch(query),
+    () => fetchYahooPublisherSearch(query),
+    async () => (await isMcporterAvailable()) ? fetchAgentReachSearch(query, 6, "article") : [],
+  ];
+  for (const search of searches) {
     try {
-      const exaCandidates = await fetchDirectExaSearch(query, "article", 6, apiKey);
-      const selected = selectGoogleNewsPublisherSearchResult(exaCandidates, context);
+      const selected = selectGoogleNewsPublisherSearchResult(await search(), context);
       if (selected) return selected;
     } catch {
-      // The public, keyless exact-title search remains available below.
-    }
-  }
-
-  try {
-    const duckDuckGoCandidates = await fetchDuckDuckGoPublisherSearch(query);
-    const selected = selectGoogleNewsPublisherSearchResult(duckDuckGoCandidates, context);
-    if (selected) return selected;
-  } catch {
-    // A second fixed public index remains available below.
-  }
-
-  try {
-    const yahooCandidates = await fetchYahooPublisherSearch(query);
-    const selected = selectGoogleNewsPublisherSearchResult(yahooCandidates, context);
-    if (selected) return selected;
-  } catch {
-    // Optional Agent-Reach is the last bounded fallback when installed.
-  }
-
-  if (await isMcporterAvailable()) {
-    try {
-      const agentReachCandidates = await fetchAgentReachSearch(query, 6, "article");
-      return selectGoogleNewsPublisherSearchResult(agentReachCandidates, context);
-    } catch {
-      return undefined;
+      // Continue with the next bounded provider.
     }
   }
   return undefined;
@@ -723,48 +684,46 @@ async function fetchDuckDuckGoPublisherSearch(
 ): Promise<GoogleNewsPublisherSearchCandidate[]> {
   const params = new URLSearchParams({
     q: query,
-    kl: containsCjk(query) ? "cn-zh" : "us-en",
+    kl: containsHan(query) ? "cn-zh" : "us-en",
   });
-  const response = await fetchTextWithTimeout(
+  const html = await fetchPublisherSearchPage(
     `${GOOGLE_NEWS_PUBLISHER_SEARCH_URL}?${params.toString()}`,
-    {
-      headers: {
-        Accept: "text/html,application/xhtml+xml",
-        "Accept-Language": containsCjk(query) ? "zh-CN,zh;q=0.9,en;q=0.6" : "en-US,en;q=0.9",
-        "User-Agent": "Mozilla/5.0 (compatible; SpeakPlainlyResearch/0.1; +local development)",
-      },
-    },
-    {
-      label: "Publisher exact-title search",
-      timeoutMs: 7_000,
-      maxBytes: GOOGLE_NEWS_MAX_SEARCH_BYTES,
-    }
+    query,
+    "Publisher exact-title search"
   );
-  if (!response.ok) return [];
-  return parseDuckDuckGoPublisherSearchResults(response.text);
+  return html === undefined ? [] : parseDuckDuckGoPublisherSearchResults(html);
 }
 
 async function fetchYahooPublisherSearch(
   query: string
 ): Promise<GoogleNewsPublisherSearchCandidate[]> {
   const params = new URLSearchParams({ p: query });
-  const response = await fetchTextWithTimeout(
+  const html = await fetchPublisherSearchPage(
     `${GOOGLE_NEWS_SECONDARY_PUBLISHER_SEARCH_URL}?${params.toString()}`,
+    query,
+    "Secondary publisher exact-title search"
+  );
+  return html === undefined ? [] : parseYahooPublisherSearchResults(html);
+}
+
+/** Fetch one bounded public search-results page; undefined for a non-2xx answer. */
+async function fetchPublisherSearchPage(
+  url: string,
+  query: string,
+  label: string
+): Promise<string | undefined> {
+  const response = await fetchTextWithTimeout(
+    url,
     {
       headers: {
         Accept: "text/html,application/xhtml+xml",
-        "Accept-Language": containsCjk(query) ? "zh-CN,zh;q=0.9,en;q=0.6" : "en-US,en;q=0.9",
+        "Accept-Language": containsHan(query) ? "zh-CN,zh;q=0.9,en;q=0.6" : "en-US,en;q=0.9",
         "User-Agent": "Mozilla/5.0 (compatible; SpeakPlainlyResearch/0.1; +local development)",
       },
     },
-    {
-      label: "Secondary publisher exact-title search",
-      timeoutMs: 7_000,
-      maxBytes: GOOGLE_NEWS_MAX_SEARCH_BYTES,
-    }
+    { label, timeoutMs: 7_000, maxBytes: GOOGLE_NEWS_MAX_SEARCH_BYTES }
   );
-  if (!response.ok) return [];
-  return parseYahooPublisherSearchResults(response.text);
+  return response.ok ? response.text : undefined;
 }
 
 function duckDuckGoResultTarget(value: string): string | undefined {
@@ -852,8 +811,8 @@ function publisherSearchTitleMatches(
   if (titlesStronglyMatch(expected, candidate)) return true;
   if (!/(?:\.\.\.|…)/u.test(candidate)) return false;
 
-  const expectedTokens = titleMatchTokens(normalizeTitleForMatch(expected));
-  const candidateTokens = titleMatchTokens(normalizeTitleForMatch(candidate));
+  const expectedTokens = normalizedTitleTokens(expected);
+  const candidateTokens = normalizedTitleTokens(candidate);
   if (expectedTokens.length < 5 || candidateTokens.length < 4) return false;
   const expectedSet = new Set(expectedTokens);
   const candidateMatches = candidateTokens.filter((token) => expectedSet.has(token)).length;
@@ -867,9 +826,9 @@ function publisherSearchTitleMatches(
 
   let pathTokens: string[];
   try {
-    pathTokens = titleMatchTokens(normalizeTitleForMatch(
+    pathTokens = normalizedTitleTokens(
       decodeURIComponent(new URL(candidateUrl).pathname.replace(/[\/_-]+/gu, " "))
-    ));
+    );
   } catch {
     return false;
   }
@@ -885,6 +844,10 @@ function normalizeTitleForMatch(value: string): string {
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
+}
+
+function normalizedTitleTokens(value: string): string[] {
+  return titleMatchTokens(normalizeTitleForMatch(value));
 }
 
 function titleMatchTokens(value: string): string[] {
@@ -1150,7 +1113,7 @@ function normalizeHostname(value: string): string {
 export async function fetchGoogleNewsArticles(
   query: string,
   limit = 8,
-  market: GoogleNewsMarket = containsCjk(query) ? "cn" : "international"
+  market: GoogleNewsMarket = containsHan(query) ? "cn" : "international"
 ): Promise<ResearchItem[]> {
   const cleanQuery = cleanText(query, 240);
   if (!cleanQuery) return [];
@@ -1201,40 +1164,33 @@ export async function fetchGoogleNewsArticles(
 
 /** Parse Hacker News story search results as links to relevant web articles. */
 export function parseHackerNewsArticles(payload: string | unknown, query: string): ResearchItem[] {
-  const parsed = typeof payload === "string" ? parseJson(payload) : payload;
-  if (!isRecord(parsed) || !Array.isArray(parsed.hits)) return [];
+  return mapPayloadRecords(payload, "hits", (raw) => {
+    const hit = raw as HackerNewsHit;
+    const objectId = cleanText(asString(hit.objectID), 80);
+    const title = cleanText(asString(hit.title), 180);
+    const url = validExternalArticleUrl(asString(hit.url));
+    if (!objectId || !title || !url) return undefined;
 
-  return parsed.hits
-    .map((raw): ResearchItem | undefined => {
-      if (!isRecord(raw)) return undefined;
-      const hit = raw as HackerNewsHit;
-      const objectId = cleanText(asString(hit.objectID), 80);
-      const title = cleanText(asString(hit.title), 180);
-      const url = validExternalArticleUrl(asString(hit.url));
-      if (!objectId || !title || !url) return undefined;
+    const summary = selectRelevantStorySummary(asString(hit.story_text), title, query);
+    if (!isRelevantText(`${title} ${summary}`, query)) return undefined;
 
-      const summary = selectRelevantStorySummary(asString(hit.story_text), title, query);
-      if (!isRelevantText(`${title} ${summary}`, query)) return undefined;
-
-      const excerpt = cleanText(summary, 280);
-      const author = cleanText(asString(hit.author), 120);
-      const sourceName = inferPublisherName(url);
-      return {
-        id: `hacker-news-story:${objectId}`,
-        sourceKind: "article",
-        sourceName,
-        sourceId: "hacker-news-stories",
-        region: inferPublisherRegion(url, sourceName),
-        title,
-        summary,
-        excerpt: excerpt || undefined,
-        url,
-        publishedAt: normalizeDate(asString(hit.created_at)),
-        authors: author ? [author] : [],
-        query,
-      };
-    })
-    .filter((item): item is ResearchItem => Boolean(item));
+    const excerpt = cleanText(summary, 280);
+    const sourceName = inferPublisherName(url);
+    return {
+      id: `hacker-news-story:${objectId}`,
+      sourceKind: "article",
+      sourceName,
+      sourceId: "hacker-news-stories",
+      region: inferPublisherRegion(url, sourceName),
+      title,
+      summary,
+      excerpt: excerpt || undefined,
+      url,
+      publishedAt: normalizeDate(asString(hit.created_at)),
+      authors: hackerNewsAuthors(hit),
+      query,
+    };
+  });
 }
 
 /** Search Hacker News' public story index for relevant linked web articles. */
@@ -1243,54 +1199,43 @@ export function fetchBuiltInWebArticles(query: string, limit = 8): Promise<Resea
   if (!cleanQuery) return Promise.resolve([]);
 
   return cached(`hacker-news-stories:${cleanQuery}:${limit}`, 20 * 60 * 1000, async () => {
-    const params = new URLSearchParams({
-      query: cleanQuery,
-      tags: "story",
-      hitsPerPage: String(Math.max(limit * 2, limit)),
-    });
-    const res = await fetchTextWithTimeout(
-      `https://hn.algolia.com/api/v1/search?${params.toString()}`,
-      { headers: { "User-Agent": "SpeakPlainlyResearch/0.1", Accept: "application/json" } },
-      { label: `${HACKER_NEWS_NAME} article search`, timeoutMs: 10_000, maxBytes: 1_000_000 }
+    const text = await fetchHackerNewsSearch(
+      cleanQuery,
+      "story",
+      Math.max(limit * 2, limit),
+      `${HACKER_NEWS_NAME} article search`,
+      "article"
     );
-    if (!res.ok) throw new Error(`${HACKER_NEWS_NAME} article search failed: ${res.status}`);
-    return parseHackerNewsArticles(res.text, cleanQuery).slice(0, limit);
+    return parseHackerNewsArticles(text, cleanQuery).slice(0, limit);
   });
 }
 
 /** Parse public Hacker News comment search output into short attributed excerpts. */
 export function parseHackerNewsComments(payload: string | unknown, query: string): ResearchItem[] {
-  const parsed = typeof payload === "string" ? parseJson(payload) : payload;
-  if (!isRecord(parsed) || !Array.isArray(parsed.hits)) return [];
+  return mapPayloadRecords(payload, "hits", (raw) => {
+    const hit = raw as HackerNewsHit;
+    const objectId = cleanText(asString(hit.objectID), 80);
+    const fullComment = cleanText(asString(hit.comment_text), 4_000);
+    const excerpt = cleanText(fullComment, 280);
+    if (!objectId || !excerpt) return undefined;
 
-  return parsed.hits
-    .map((raw): ResearchItem | undefined => {
-      if (!isRecord(raw)) return undefined;
-      const hit = raw as HackerNewsHit;
-      const objectId = cleanText(asString(hit.objectID), 80);
-      const fullComment = cleanText(asString(hit.comment_text), 4_000);
-      const excerpt = cleanText(fullComment, 280);
-      if (!objectId || !excerpt) return undefined;
-
-      const storyTitle = cleanText(asString(hit.story_title), 180);
-      if (!isRelevantText(`${storyTitle} ${fullComment}`, query)) return undefined;
-      const author = cleanText(asString(hit.author), 120);
-      return {
-        id: `hacker-news-comment:${objectId}`,
-        sourceKind: "comment",
-        sourceName: HACKER_NEWS_NAME,
-        sourceId: "hacker-news-comments",
-        region: "international",
-        title: storyTitle ? `Comment on: ${storyTitle}` : `Public comment about ${cleanText(query, 120)}`,
-        summary: excerpt,
-        excerpt,
-        url: `https://news.ycombinator.com/item?id=${encodeURIComponent(objectId)}`,
-        publishedAt: normalizeDate(asString(hit.created_at)),
-        authors: author ? [author] : [],
-        query,
-      };
-    })
-    .filter((item): item is ResearchItem => Boolean(item));
+    const storyTitle = cleanText(asString(hit.story_title), 180);
+    if (!isRelevantText(`${storyTitle} ${fullComment}`, query)) return undefined;
+    return {
+      id: `hacker-news-comment:${objectId}`,
+      sourceKind: "comment",
+      sourceName: HACKER_NEWS_NAME,
+      sourceId: "hacker-news-comments",
+      region: "international",
+      title: storyTitle ? `Comment on: ${storyTitle}` : `Public comment about ${cleanText(query, 120)}`,
+      summary: excerpt,
+      excerpt,
+      url: `https://news.ycombinator.com/item?id=${encodeURIComponent(objectId)}`,
+      publishedAt: normalizeDate(asString(hit.created_at)),
+      authors: hackerNewsAuthors(hit),
+      query,
+    };
+  });
 }
 
 /** Search public comments without credentials through Hacker News' Algolia endpoint. */
@@ -1299,19 +1244,38 @@ export function fetchPublicComments(query: string, limit = 5): Promise<ResearchI
   if (!cleanQuery) return Promise.resolve([]);
 
   return cached(`hacker-news-comments:${cleanQuery}:${limit}`, 20 * 60 * 1000, async () => {
-    const params = new URLSearchParams({
-      query: cleanQuery,
-      tags: "comment",
-      hitsPerPage: String(Math.max(limit, 1)),
-    });
-    const res = await fetchTextWithTimeout(
-      `https://hn.algolia.com/api/v1/search?${params.toString()}`,
-      { headers: { "User-Agent": "SpeakPlainlyResearch/0.1", Accept: "application/json" } },
-      { label: HACKER_NEWS_NAME, timeoutMs: 10_000, maxBytes: 1_000_000 }
+    const text = await fetchHackerNewsSearch(
+      cleanQuery,
+      "comment",
+      Math.max(limit, 1),
+      HACKER_NEWS_NAME,
+      "comment"
     );
-    if (!res.ok) throw new Error(`${HACKER_NEWS_NAME} comment search failed: ${res.status}`);
-    return parseHackerNewsComments(res.text, cleanQuery).slice(0, limit);
+    return parseHackerNewsComments(text, cleanQuery).slice(0, limit);
   });
+}
+
+/** Query Hacker News' public Algolia index and return the raw JSON text. */
+async function fetchHackerNewsSearch(
+  query: string,
+  tags: "story" | "comment",
+  hitsPerPage: number,
+  label: string,
+  failureKind: "article" | "comment"
+): Promise<string> {
+  const params = new URLSearchParams({ query, tags, hitsPerPage: String(hitsPerPage) });
+  const res = await fetchTextWithTimeout(
+    `https://hn.algolia.com/api/v1/search?${params.toString()}`,
+    { headers: { "User-Agent": "SpeakPlainlyResearch/0.1", Accept: "application/json" } },
+    { label, timeoutMs: 10_000, maxBytes: 1_000_000 }
+  );
+  if (!res.ok) throw new Error(`${HACKER_NEWS_NAME} ${failureKind} search failed: ${res.status}`);
+  return res.text;
+}
+
+function hackerNewsAuthors(hit: HackerNewsHit): string[] {
+  const author = cleanText(asString(hit.author), 120);
+  return author ? [author] : [];
 }
 
 /** Parse direct Exa search output for either web articles or public discussions. */
@@ -1320,37 +1284,110 @@ export function parseExaSearchResults(
   query: string,
   sourceKind: Extract<ResearchSourceKind, "article" | "comment">
 ): ResearchItem[] {
-  const parsed = typeof payload === "string" ? parseJson(payload) : payload;
-  if (!isRecord(parsed) || !Array.isArray(parsed.results)) return [];
+  return mapPayloadRecords(payload, "results", (raw) => {
+    const result = raw as ExaRawResult;
+    const title = cleanText(asString(result.title), 180);
+    const url = normalizePublicSourceUrl(asString(result.url));
+    if (!title || !url) return undefined;
 
-  return parsed.results
-    .map((raw): ResearchItem | undefined => {
-      if (!isRecord(raw)) return undefined;
-      const result = raw as ExaRawResult;
-      const title = cleanText(asString(result.title), 180);
-      const url = normalizePublicSourceUrl(asString(result.url));
-      if (!title || !url) return undefined;
+    const highlightText = cleanText(asStringArray(result.highlights).join(" "), 4_000);
+    const fullText = cleanText(asString(result.text), 8_000);
+    const excerpt = cleanText(highlightText || fullText, 600);
+    const summary = cleanText(asString(result.summary), 700) || excerpt;
+    const imageUrl = cleanText(asString(result.image), 500);
+    const sourceName = inferPublisherName(url);
+    return {
+      id: `exa-${sourceKind}:${url.toLowerCase()}`,
+      sourceKind,
+      sourceName,
+      sourceId: `exa-${sourceKind}`,
+      region: inferPublisherRegion(url, sourceName),
+      title,
+      summary,
+      excerpt: excerpt || undefined,
+      content: fullText || highlightText || undefined,
+      url,
+      imageUrl: /^https?:\/\//i.test(imageUrl) ? imageUrl : undefined,
+      publishedAt: normalizeDate(asString(result.publishedDate) || asString(result.publishedAt)),
+      authors: normalizeAuthors(result.author ?? result.authors),
+      query,
+    };
+  });
+}
 
-      const excerpt = cleanText(asStringArray(result.highlights).join(" ") || asString(result.text), 280);
-      const summary = cleanText(asString(result.summary), 700) || excerpt;
-      const imageUrl = cleanText(asString(result.image), 500);
-      const sourceName = inferPublisherName(url);
-      return {
-        id: `exa-${sourceKind}:${url.toLowerCase()}`,
-        sourceKind,
-        sourceName,
-        sourceId: `exa-${sourceKind}`,
-        region: inferPublisherRegion(url, sourceName),
-        title,
-        summary,
-        excerpt: excerpt || undefined,
-        url,
-        imageUrl: /^https?:\/\//i.test(imageUrl) ? imageUrl : undefined,
-        publishedAt: normalizeDate(asString(result.publishedDate) || asString(result.publishedAt)),
-        authors: normalizeAuthors(result.author ?? result.authors),
-        query,
-      };
-    })
+/** Map DeepSeek web results through the shared public-source URL policy. */
+export function parseDeepSeekSearchResults(payload: string | unknown, query: string): ResearchItem[] {
+  return mapPayloadRecords(payload, "results", (raw) => {
+    const title = cleanText(asString(raw.title), 180);
+    const url = normalizePublicSourceUrl(asString(raw.url));
+    if (!title || !url) return undefined;
+
+    const content = cleanText(asString(raw.content), 8_000);
+    const snippet = cleanText(asString(raw.snippet), 600);
+    const summary = cleanText(asString(raw.summary), 700) || snippet || cleanText(content, 700);
+    const sourceName = cleanText(asString(raw.site_name), 100) || inferPublisherName(url);
+    return {
+      id: `deepseek-article:${url.toLowerCase()}`,
+      sourceKind: "article",
+      sourceName,
+      sourceId: "deepseek-search",
+      region: inferPublisherRegion(url, sourceName),
+      title,
+      summary,
+      excerpt: snippet || cleanText(summary || content, 600) || undefined,
+      content: content || undefined,
+      url,
+      publishedAt: normalizeDate(asString(raw.date)),
+      authors: [],
+      query,
+    };
+  });
+}
+
+/** Resolve a dedicated key, or the configured LLM key when its provider is DeepSeek. */
+export function deepSeekSearchConfig(env: NodeJS.ProcessEnv = process.env): { apiKey: string; url: string } | undefined {
+  if (env.DEEPSEEK_SEARCH?.trim().toLowerCase() === "off") return undefined;
+  let usesDeepSeek = false;
+  try {
+    usesDeepSeek = new URL(env.LLM_BASE_URL ?? "https://api.deepseek.com").hostname === "api.deepseek.com";
+  } catch {
+    // An invalid LLM endpoint must not enable search using another provider's key.
+  }
+  const apiKey = (usesDeepSeek
+    ? env.LLM_API_KEY ?? env.DEEPSEEK_API_KEY
+    : env.DEEPSEEK_API_KEY)?.trim();
+  if (!apiKey) return undefined;
+  return { apiKey, url: env.DEEPSEEK_SEARCH_URL?.trim() || DEEPSEEK_SEARCH_URL };
+}
+
+/** Search with bounded public HTTP transport; never forward credentials to redirects. */
+async function fetchDeepSeekSearch(query: string, settings: { apiKey: string; url: string }): Promise<ResearchItem[]> {
+  const endpoint = normalizePublicSourceUrl(settings.url);
+  if (!endpoint || new URL(endpoint).protocol !== "https:") throw new Error("Invalid DeepSeek search endpoint");
+  const res = await fetchTextWithOutboundPolicy(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${settings.apiKey}` },
+    body: JSON.stringify({ query: query.slice(0, 128), count: 8, need_content: true }),
+    label: "DeepSeek search",
+    timeoutMs: 18_000,
+    maxBytes: 2_000_000,
+    maxRedirects: 0,
+  });
+  if (!res.ok) throw new Error(`DeepSeek search failed: ${res.status}`);
+  return parseDeepSeekSearchResults(res.text, query).slice(0, 8);
+}
+
+/** Map each object in a provider JSON payload's array field, dropping rejected entries. */
+function mapPayloadRecords(
+  payload: string | unknown,
+  field: "hits" | "results",
+  toItem: (raw: Record<string, unknown>) => ResearchItem | undefined
+): ResearchItem[] {
+  const parsed = typeof payload === "string" ? tryParseJson(payload) : payload;
+  const records = isRecord(parsed) ? parsed[field] : undefined;
+  if (!Array.isArray(records)) return [];
+  return records
+    .map((raw) => (isRecord(raw) ? toItem(raw) : undefined))
     .filter((item): item is ResearchItem => Boolean(item));
 }
 
@@ -1373,13 +1410,31 @@ export async function fetchBroadWebSourcesWithDiagnostics(query: string): Promis
   const cleanQuery = cleanText(query, 240);
   if (!cleanQuery) return { items: [], unavailableSources: [] };
 
+  const settings = deepSeekSearchConfig();
+  const settled = await Promise.allSettled([
+    fetchExaSourcesWithDiagnostics(cleanQuery),
+    settings ? fetchDeepSeekSearch(cleanQuery, settings) : Promise.resolve([]),
+  ]);
+  const existing = settled[0].status === "fulfilled" ? settled[0].value : { items: [], unavailableSources: [] };
+  const deepSeekItems = settled[1].status === "fulfilled" ? settled[1].value : [];
+  return {
+    items: [...existing.items, ...deepSeekItems],
+    unavailableSources: [
+      ...existing.unavailableSources,
+      ...providerDiagnosticsFromSettled<unknown>(settled, ["Broad web provider", "DeepSeek search"]),
+    ],
+  };
+}
+
+/** Preserve the Exa and Agent-Reach fallback behavior alongside other web providers. */
+async function fetchExaSourcesWithDiagnostics(cleanQuery: string): Promise<BroadWebSearchResult> {
   const apiKey = process.env.EXA_API_KEY?.trim();
   if (apiKey) {
     const direct = await Promise.allSettled([
       fetchDirectExaSearch(cleanQuery, "article", 6, apiKey),
       fetchDirectExaSearch(cleanQuery, "comment", 4, apiKey),
     ]);
-    const directItems = direct.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
+    const directItems = fulfilledItems(direct);
     const warnings = providerDiagnosticsFromSettled(direct, ["Exa article search", "Exa comment search"]);
     if (warnings.length === 0) return { items: directItems, unavailableSources: [] };
 
@@ -1406,9 +1461,13 @@ async function fetchAgentReachPairWithDiagnostics(query: string): Promise<BroadW
     fetchAgentReachSearch(discussionQuery(query), 4, "comment"),
   ]);
   return {
-    items: settled.flatMap((result) => (result.status === "fulfilled" ? result.value : [])),
+    items: fulfilledItems(settled),
     unavailableSources: providerDiagnosticsFromSettled(settled, ["Agent-Reach article search", "Agent-Reach comment search"]),
   };
+}
+
+function fulfilledItems(settled: PromiseSettledResult<ResearchItem[]>[]): ResearchItem[] {
+  return settled.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
 }
 
 /** Convert rejected provider calls to stable diagnostics without exposing upstream text. */
@@ -1430,7 +1489,7 @@ export function providerFailureDiagnostic(label: string, error: unknown): string
 
 /** Re-sanitize nested broad-web warnings at the aggregate boundary. */
 export function normalizeProviderDiagnostic(value: unknown): string {
-  const raw = typeof value === "string" ? value : "";
+  const raw = asString(value);
   const label = BROAD_WEB_PROVIDER_LABELS.find(
     (candidate) => raw === candidate || raw.startsWith(`${candidate}:`)
   );
@@ -1496,10 +1555,15 @@ async function fetchDirectExaSearch(
   return cached(`exa-direct:${sourceKind}:${query}:${limit}`, 20 * 60 * 1000, async () => {
     const body: Record<string, unknown> = {
       query,
-      type: "fast",
+      type: sourceKind === "article" ? "auto" : "fast",
       numResults: limit,
       moderation: true,
-      contents: { highlights: true },
+      contents: sourceKind === "article"
+        ? {
+            highlights: { query, maxCharacters: 4_000 },
+            text: { maxCharacters: 8_000 },
+          }
+        : { highlights: { query, maxCharacters: 2_000 } },
     };
     if (sourceKind === "comment") body.includeDomains = DISCUSSION_DOMAINS;
 
@@ -1518,11 +1582,7 @@ async function fetchDirectExaSearch(
 }
 
 function discussionQuery(query: string): string {
-  return containsCjk(query) ? `${query} 真实体验 观点 评论 讨论` : `${query} experiences opinions reviews discussion`;
-}
-
-function containsCjk(value: string): boolean {
-  return /[\u3400-\u9fff]/u.test(value);
+  return containsHan(query) ? `${query} 真实体验 观点 评论 讨论` : `${query} experiences opinions reviews discussion`;
 }
 
 /** Accept only genuine external HTTP(S) links; HN self-posts remain discussions. */
@@ -1638,12 +1698,6 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function normalizeDate(value: string): string {
-  if (!value) return "";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
-}
-
 function normalizeAuthors(value: unknown): string[] {
   const values = Array.isArray(value) ? value : [value];
   return values.map(asString).map((author) => cleanText(author, 120)).filter(Boolean);
@@ -1651,22 +1705,6 @@ function normalizeAuthors(value: unknown): string[] {
 
 function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map(asString).filter(Boolean) : [];
-}
-
-function parseJson(value: string): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return undefined;
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function asString(value: unknown): string {
-  return typeof value === "string" ? value : "";
 }
 
 function cleanText(value: string, maxLength: number): string {

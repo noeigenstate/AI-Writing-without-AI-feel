@@ -1,21 +1,35 @@
 import { useEffect, useState } from "react";
 import { useStore } from "./lib/store.js";
 import UploadPanel from "./components/upload/UploadPanel.js";
-import ArticleGenerator from "./components/generate/ArticleGenerator.js";
+import ArticleGenerator, { type GeneratorView } from "./components/generate/ArticleGenerator.js";
+import NovelGenerator from "./components/novel/NovelGenerator.js";
 import DocEditor from "./components/editor/DocEditor.js";
 import ScoreBar from "./components/editor/ScoreBar.js";
-import { ChatLogo, Sparkle, WordIcon } from "./components/common/icons.js";
+import { BookIcon, Sparkle, WordIcon } from "./components/common/icons.js";
 import ProgressBanner from "./components/common/ProgressBanner.js";
-import { messages } from "./lib/i18n.js";
+import SidebarScene from "./components/common/scenery/SidebarScene.js";
+import BackdropScene from "./components/common/scenery/BackdropScene.js";
+import HeroScene from "./components/common/scenery/HeroScene.js";
+import { messages, type Dict, type Lang } from "./lib/i18n.js";
 
-/** Root component: sidebar navigation, gradient hero, and the active view. */
+type Mode = "rewrite" | "generate" | "novel";
+
+const NAV_ITEMS = [
+  { mode: "rewrite", index: "01", Icon: WordIcon, label: "modeRewrite" },
+  { mode: "generate", index: "02", Icon: Sparkle, label: "modeGenerate" },
+  { mode: "novel", index: "03", Icon: BookIcon, label: "modeNovel" },
+] as const;
+
+/** Root component: painted sidebar navigation, illustrated hero, and the active view. */
 export default function App() {
   const { lang, step, mode, busy, progress, error, styleSummary, workspaces, reset, setMode, setLang } = useStore();
-  const [generatorView, setGeneratorView] = useState<"setup" | "results">("setup");
+  const [generatorView, setGeneratorView] = useState<GeneratorView>("setup");
   const t = messages[lang];
   const rewriteStep = mode === "rewrite" ? step : workspaces.rewrite.step;
   const generateStep = mode === "generate" ? step : workspaces.generate.step;
-  const showUploadHero = step === "upload" && (mode === "rewrite" || generatorView === "setup");
+  const novelStep = mode === "novel" ? step : workspaces.novel.step;
+  const showUploadHero = step === "upload" && (mode !== "generate" || generatorView === "setup");
+  const hero = heroCopy(t, mode);
 
   useEffect(() => {
     document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
@@ -25,52 +39,35 @@ export default function App() {
     if (generateStep !== "upload") setGeneratorView("setup");
   }, [generateStep]);
 
-  function selectMode(next: "rewrite" | "generate") {
-    setMode(next);
-  }
-
   return (
     <div className="layout" data-mode={mode}>
       <aside className="sidebar">
+        <SidebarScene />
         <div className="side-brand">
-          <span className="logo">
-            <ChatLogo />
-          </span>
-          <div className="brand-text">
-            <strong>Speak Plainly</strong>
-            {lang === "zh" && <span className="brand-zh">说人话</span>}
-          </div>
+          <strong>AI写作</strong>
         </div>
 
         <nav className="side-nav" aria-label={t.navTools}>
           <span className="side-caption">{t.navTools}</span>
-          <button
-            className={`side-item${mode === "rewrite" ? " active" : ""}`}
-            onClick={() => selectMode("rewrite")}
-            aria-current={mode === "rewrite" ? "page" : undefined}
-          >
-            <span className="side-index" aria-hidden="true">01</span>
-            <span className="side-icon">
-              <WordIcon />
-            </span>
-            {t.modeRewrite}
-          </button>
-          <button
-            className={`side-item${mode === "generate" ? " active" : ""}`}
-            onClick={() => selectMode("generate")}
-            aria-current={mode === "generate" ? "page" : undefined}
-          >
-            <span className="side-index" aria-hidden="true">02</span>
-            <span className="side-icon">
-              <Sparkle />
-            </span>
-            {t.modeGenerate}
-          </button>
+          {NAV_ITEMS.map(({ mode: itemMode, index, Icon, label }) => (
+            <button
+              key={itemMode}
+              className={`side-item${mode === itemMode ? " active" : ""}`}
+              onClick={() => setMode(itemMode)}
+              aria-current={mode === itemMode ? "page" : undefined}
+            >
+              <span className="side-index" aria-hidden="true">{index}</span>
+              <span className="side-icon">
+                <Icon />
+              </span>
+              {t[label]}
+            </button>
+          ))}
         </nav>
 
         <div className="side-foot">
           <span className="side-edition" aria-hidden="true">
-            {lang === "zh" ? "编辑台 · 001" : "COPY DESK · 001"}
+            {lang === "zh" ? "林边手帖 · 001" : "FIELD NOTES · 001"}
           </span>
           <button className="side-item side-lang" onClick={() => setLang(lang === "en" ? "zh" : "en")}>
             {t.langToggle}
@@ -78,23 +75,21 @@ export default function App() {
         </div>
       </aside>
 
-      <div className="main-pane">
+      <div className={`main-pane${showUploadHero ? " has-hero" : ""}`}>
+        <BackdropScene />
         <div className="workspace-folio" aria-hidden="true">
-          <span>SP—001</span>
-          <span>
-            {mode === "rewrite"
-              ? (lang === "zh" ? "改写工作台" : "REWRITE DESK")
-              : generatorView === "results"
-                ? (lang === "zh" ? "标题提案台" : "TITLE DESK")
-                : (lang === "zh" ? "写作工作台" : "WRITING DESK")}
-          </span>
-          <span>{lang === "zh" ? "字句清楚 · 依据可查" : "CLEAR COPY · VISIBLE SOURCES"}</span>
+          <span>{lang === "zh" ? "晴 · 微风" : "SUNNY · LIGHT BREEZE"}</span>
+          <span>{deskName(mode, generatorView, lang)}</span>
+          <span>{deskMotto(mode, lang)}</span>
         </div>
         {showUploadHero ? (
           <header className="hero">
-            <h1 className="hero-title">{mode === "rewrite" ? t.heroRewriteTitle : t.heroGenerateTitle}</h1>
-            <p className="hero-sub">{mode === "rewrite" ? t.heroRewriteSub : t.heroGenerateSub}</p>
-            {mode === "generate" && <p className="hero-proxy-hint">{t.researchProxyHint}</p>}
+            <div className="hero-copy">
+              <h1 className="hero-title">{hero.title}</h1>
+              <p className="hero-sub">{hero.sub}</p>
+              {mode === "generate" && <p className="hero-proxy-hint">{t.researchProxyHint}</p>}
+            </div>
+            <HeroScene mode={mode} />
           </header>
         ) : step !== "upload" ? (
           <header className="page-head">
@@ -116,13 +111,13 @@ export default function App() {
 
         {step === "ready" && styleSummary && (
           <details className="style-box">
-            <summary>{t.styleProfile}</summary>
+            <summary>{mode === "novel" ? t.novelSettingsSummary : t.styleProfile}</summary>
             <pre>{styleSummary}</pre>
           </details>
         )}
 
         <main>
-          {/* 两个工作区的编辑器都保持挂载、只用 hidden 切换显隐：卸载会丢掉
+          {/* 三个工作区的编辑器都保持挂载、只用 hidden 切换显隐：卸载会丢掉
               公众号排版等组件本地状态，切回来时进行中的排版就被打断了 */}
           <section hidden={mode !== "rewrite"}>
             {rewriteStep === "upload" ? <UploadPanel /> : <DocEditor />}
@@ -130,10 +125,33 @@ export default function App() {
           <section hidden={mode !== "generate"}>
             {generateStep === "upload" ? <ArticleGenerator onViewChange={setGeneratorView} /> : <DocEditor />}
           </section>
+          <section hidden={mode !== "novel"}>
+            {novelStep === "upload" ? <NovelGenerator /> : <DocEditor />}
+          </section>
         </main>
 
         {step === "ready" && <footer className="hint">{t.editorHint}</footer>}
       </div>
     </div>
   );
+}
+
+function heroCopy(t: Dict, mode: Mode): { title: string; sub: string } {
+  if (mode === "rewrite") return { title: t.heroRewriteTitle, sub: t.heroRewriteSub };
+  if (mode === "generate") return { title: t.heroGenerateTitle, sub: t.heroGenerateSub };
+  return { title: t.heroNovelTitle, sub: t.heroNovelSub };
+}
+
+/** Decorative caption naming the current desk. */
+function deskName(mode: Mode, generatorView: GeneratorView, lang: Lang): string {
+  const zh = lang === "zh";
+  if (mode === "rewrite") return zh ? "草坡改写台" : "MEADOW REWRITE DESK";
+  if (mode === "novel") return zh ? "林间小说台" : "FOREST FICTION DESK";
+  if (generatorView === "results") return zh ? "云端标题台" : "CLOUD TITLE DESK";
+  return zh ? "晴空写作台" : "SUNNY WRITING DESK";
+}
+
+function deskMotto(mode: Mode, lang: Lang): string {
+  if (mode === "novel") return lang === "zh" ? "人物可信 · 情节连贯" : "CONSISTENT VOICE · COHERENT PLOT";
+  return lang === "zh" ? "字句清楚 · 依据可查" : "CLEAR COPY · VISIBLE SOURCES";
 }

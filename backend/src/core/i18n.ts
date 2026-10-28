@@ -35,6 +35,26 @@ export const SERVER_MESSAGES = {
     en: "Title is too long; keep it under 120 characters.",
     zh: "标题太长，请控制在 120 字以内",
   },
+  missingNovelPremise: {
+    en: "Describe the story you want to write.",
+    zh: "请先写下故事设定",
+  },
+  novelPremiseTooLong: {
+    en: "The story brief is too long; keep it under 2,000 characters.",
+    zh: "故事设定太长，请控制在 2000 字以内",
+  },
+  novelTitleTooLong: {
+    en: "The fiction title is too long; keep it under 120 characters.",
+    zh: "小说标题太长，请控制在 120 字以内",
+  },
+  invalidNovelOptions: {
+    en: "Invalid fiction settings; choose a supported genre, viewpoint, and tone.",
+    zh: "小说设置无效，请重新选择题材、叙事视角和基调",
+  },
+  invalidNovelOutput: {
+    en: "The model returned incomplete fiction after an automatic retry. Please try again.",
+    zh: "模型返回的小说不完整，系统已自动重试一次，请重新生成",
+  },
   invalidTargetLength: {
     en: "Invalid targetLength; use short, medium, or long.",
     zh: "targetLength 无效，请使用 short、medium 或 long",

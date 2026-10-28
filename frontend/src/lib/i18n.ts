@@ -35,15 +35,19 @@ export interface Dict {
   heroRewriteSub: string;
   heroGenerateTitle: string;
   heroGenerateSub: string;
+  heroNovelTitle: string;
+  heroNovelSub: string;
   researchProxyHint: string;
   editorTitle: string;
   // header
   modeRewrite: string;
   modeGenerate: string;
+  modeNovel: string;
   polishAll: string;
   exportWord: string;
   restart: string;
   styleProfile: string;
+  novelSettingsSummary: string;
   editorHint: string;
   // upload panel
   uploadTitle: string;
@@ -106,6 +110,38 @@ export interface Dict {
   regionGlobal: string;
   unavailableSources: (list: string) => string;
   generateArticleBtn: string;
+  // novel generator
+  novelStep1: string;
+  novelStep2: string;
+  novelTitleLabel: string;
+  novelTitlePlaceholder: string;
+  novelPremiseLabel: string;
+  novelPremisePlaceholder: string;
+  novelPremiseHint: string;
+  novelPremiseCount: (n: number) => string;
+  novelGenreLabel: string;
+  novelGenreLiterary: string;
+  novelGenreRomance: string;
+  novelGenreSuspense: string;
+  novelGenreScienceFiction: string;
+  novelGenreFantasy: string;
+  novelGenreHistorical: string;
+  novelGenreRealism: string;
+  novelViewpointLabel: string;
+  novelViewpointFirst: string;
+  novelViewpointThirdLimited: string;
+  novelViewpointOmniscient: string;
+  novelToneLabel: string;
+  novelToneRestrained: string;
+  novelToneWarm: string;
+  novelToneDark: string;
+  novelToneHumorous: string;
+  novelToneTense: string;
+  novelLengthLabel: string;
+  novelLengthShort: string;
+  novelLengthMedium: string;
+  novelLengthLong: string;
+  generateNovelBtn: string;
   // gzh export panel (公众号排版)
   gzhPanelTitle: string;
   gzhFormatBtn: string;
@@ -160,11 +196,13 @@ export interface Dict {
   busyParsing: string;
   busyGenerating: string;
   busyMatching: string;
+  busyNovel: string;
   busyRewriting: string;
   busyExporting: string;
   progressArticleSteps: string[];
   progressArticleFromTitleSteps: string[];
   progressArticleTopicSteps: string[];
+  progressNovelSteps: string[];
   progressRewriteSteps: string[];
   progressTitleCandidateSteps: string[];
   progressGzhSteps: string[];
@@ -183,15 +221,20 @@ const en: Dict = {
   heroGenerateTitle: "Source-Backed Articles",
   heroGenerateSub:
     "Generate from a title or domain with automatic research across relevant web articles, public comments, papers, and news.",
+  heroNovelTitle: "Write Fiction",
+  heroNovelSub:
+    "Turn a premise into an editable story with a consistent viewpoint, deliberate pacing, and a real narrative turn.",
   researchProxyHint:
     "Many sources are hosted overseas. If access is unstable on your current network, enabling an overseas proxy can make the research more complete.",
   editorTitle: "Edit & Polish",
   modeRewrite: "Rewrite Word",
   modeGenerate: "Generate article",
+  modeNovel: "Write novel",
   polishAll: "Polish whole doc (de-AI)",
   exportWord: "Export Word",
   restart: "Start over",
   styleProfile: "Extracted style profile",
+  novelSettingsSummary: "Narrative settings",
   editorHint: "Click any sentence → pick an alternative or edit by hand. When done, click “Export Word”.",
   uploadTitle: "Upload the Word file to rewrite",
   chooseFile: "Choose file",
@@ -253,6 +296,37 @@ const en: Dict = {
   regionGlobal: "global",
   unavailableSources: (list) => `Some sources are unavailable: ${list}`,
   generateArticleBtn: "Generate article",
+  novelStep1: "Set the story in motion",
+  novelStep2: "Choose the narrative",
+  novelTitleLabel: "Title (optional)",
+  novelTitlePlaceholder: "Leave blank and AI will name the story",
+  novelPremiseLabel: "Story brief",
+  novelPremisePlaceholder: "Who wants what, what stands in the way, and where does the story begin?",
+  novelPremiseHint: "Give the protagonist, pressure, and opening situation. The generated draft remains fully editable.",
+  novelPremiseCount: (n) => `${n}/2000 characters`,
+  novelGenreLabel: "Genre",
+  novelGenreLiterary: "Literary fiction",
+  novelGenreRomance: "Romance",
+  novelGenreSuspense: "Suspense / mystery",
+  novelGenreScienceFiction: "Science fiction",
+  novelGenreFantasy: "Fantasy",
+  novelGenreHistorical: "Historical fiction",
+  novelGenreRealism: "Contemporary realism",
+  novelViewpointLabel: "Viewpoint",
+  novelViewpointFirst: "First person",
+  novelViewpointThirdLimited: "Third-person limited",
+  novelViewpointOmniscient: "Third-person omniscient",
+  novelToneLabel: "Tone",
+  novelToneRestrained: "Restrained and observant",
+  novelToneWarm: "Warm and humane",
+  novelToneDark: "Dark and oppressive",
+  novelToneHumorous: "Dryly humorous",
+  novelToneTense: "Tense and propulsive",
+  novelLengthLabel: "Story length",
+  novelLengthShort: "Flash 350–500 words",
+  novelLengthMedium: "Short story 850–1100 words",
+  novelLengthLong: "Long opening 2200–2800 words",
+  generateNovelBtn: "Generate fiction",
   gzhPanelTitle: "WeChat formatting",
   gzhFormatBtn: "Auto-format",
   gzhFormatting: "Formatting…",
@@ -311,6 +385,7 @@ const en: Dict = {
   busyParsing: "Parsing document, extracting style…",
   busyGenerating: "Writing the article…",
   busyMatching: "Matching domain and writing the article…",
+  busyNovel: "Writing the story…",
   busyRewriting: "Rewriting the whole doc (de-AI), hold on…",
   busyExporting: "Building the Word file…",
   progressArticleSteps: [
@@ -332,6 +407,13 @@ const en: Dict = {
     "Finding workable angles",
     "Drafting candidate titles",
     "Preparing choices",
+  ],
+  progressNovelSteps: [
+    "Reading the story brief",
+    "Shaping characters and conflict",
+    "Drafting the scenes",
+    "Checking viewpoint and continuity",
+    "Building the editable document",
   ],
   progressRewriteSteps: [
     "Reading the document structure",
@@ -364,14 +446,18 @@ const zh: Dict = {
   heroRewriteSub: "把 AI 味很重的稿子改写成更像真人写的文字。上传 Word，逐句润色，一键导出。",
   heroGenerateTitle: "AI 文章生成",
   heroGenerateSub: "按标题或领域生成文章，默认检索相关网页文章、公开评论、论文与新闻资料。",
+  heroNovelTitle: "小说创作",
+  heroNovelSub: "从一个故事设定出发，生成视角稳定、节奏清楚、真正发生转折的可编辑小说。",
   researchProxyHint: "较多资料来自境外站点；当前网络访问不稳时，开启境外代理会让检索更完整。",
   editorTitle: "编辑与润色",
   modeRewrite: "改写 Word",
   modeGenerate: "生成文章",
+  modeNovel: "写小说",
   polishAll: "整篇润色（去 AI 味）",
   exportWord: "导出 Word",
   restart: "重新开始",
   styleProfile: "已提取的风格画像",
+  novelSettingsSummary: "叙事设置",
   editorHint: "点任意句子 → 选候选表达或手动编辑。改完点「导出 Word」。",
   uploadTitle: "上传待改写的 Word",
   chooseFile: "选择文件",
@@ -433,6 +519,37 @@ const zh: Dict = {
   regionGlobal: "全球",
   unavailableSources: (list) => `部分来源暂不可用：${list}`,
   generateArticleBtn: "一键生成文章",
+  novelStep1: "写下故事设定",
+  novelStep2: "确定叙事方式",
+  novelTitleLabel: "小说标题（可选）",
+  novelTitlePlaceholder: "留空则由 AI 根据故事设定拟题",
+  novelPremiseLabel: "故事设定",
+  novelPremisePlaceholder: "主角想得到什么？阻力是什么？故事从哪个具体场景开始？",
+  novelPremiseHint: "写清主角、压力和开场处境即可；生成后可继续逐句修改。",
+  novelPremiseCount: (n) => `${n}/2000 字`,
+  novelGenreLabel: "题材",
+  novelGenreLiterary: "文学",
+  novelGenreRomance: "言情",
+  novelGenreSuspense: "悬疑",
+  novelGenreScienceFiction: "科幻",
+  novelGenreFantasy: "奇幻",
+  novelGenreHistorical: "历史",
+  novelGenreRealism: "现实主义",
+  novelViewpointLabel: "叙事视角",
+  novelViewpointFirst: "第一人称",
+  novelViewpointThirdLimited: "第三人称限知",
+  novelViewpointOmniscient: "第三人称全知",
+  novelToneLabel: "故事基调",
+  novelToneRestrained: "克制冷静",
+  novelToneWarm: "温暖细腻",
+  novelToneDark: "冷峻暗黑",
+  novelToneHumorous: "轻松幽默",
+  novelToneTense: "紧张强烈",
+  novelLengthLabel: "小说篇幅",
+  novelLengthShort: "微短篇 450–650 字",
+  novelLengthMedium: "短篇 1000–1300 字",
+  novelLengthLong: "长篇开篇 3000–3800 字",
+  generateNovelBtn: "生成小说",
   gzhPanelTitle: "公众号排版",
   gzhFormatBtn: "自动排版",
   gzhFormatting: "排版中…",
@@ -491,6 +608,7 @@ const zh: Dict = {
   busyParsing: "解析文档、提取风格中…",
   busyGenerating: "正在生成文章…",
   busyMatching: "正在判断领域并生成文章…",
+  busyNovel: "正在创作小说…",
   busyRewriting: "整篇改写中（去 AI 味），稍候…",
   busyExporting: "生成 Word 中…",
   progressArticleSteps: [
@@ -512,6 +630,13 @@ const zh: Dict = {
     "正在寻找可写角度",
     "正在生成候选标题",
     "正在整理候选项",
+  ],
+  progressNovelSteps: [
+    "正在读取故事设定",
+    "正在建立人物与冲突",
+    "正在撰写小说场景",
+    "正在检查视角与情节连续性",
+    "正在生成可编辑文档",
   ],
   progressRewriteSteps: [
     "正在读取文档结构",

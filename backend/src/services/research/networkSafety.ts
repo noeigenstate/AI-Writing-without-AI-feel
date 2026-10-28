@@ -71,6 +71,8 @@ export interface SafeFetchOptions {
   maxBytes: number;
   maxRedirects?: number;
   headers?: Record<string, string>;
+  method?: "GET" | "POST";
+  body?: string;
 }
 
 export interface SafeFetchResult {
@@ -114,7 +116,7 @@ interface NativeRequestResponse extends AsyncIterable<Uint8Array> {
 interface NativeRequestHandle {
   setHeader: (name: string, value: string) => void;
   once: (event: "error", listener: (error: Error) => void) => NativeRequestHandle;
-  end: () => void;
+  end: (body?: string) => void;
 }
 
 type OpenNativeRequest = (
@@ -280,7 +282,7 @@ export async function fetchBinaryWithOutboundPolicy(
   const lookupHost = dependencies.lookup ?? defaultLookupHost;
   const transport = dependencies.transport ?? (
     (url, address, headers, signal) =>
-      openNativeTransport(url, address, headers, signal, dependencies.nativeRequest)
+      openNativeTransport(url, address, headers, signal, dependencies.nativeRequest, options)
   );
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
   const controller = new AbortController();
@@ -293,57 +295,17 @@ export async function fetchBinaryWithOutboundPolicy(
         throw new Error(`${options.label} 请求超时`);
       }
 
-      const validated = await raceWithAbort(
-        validateOutboundUrl(current, lookupHost),
-        controller.signal,
-        `${options.label} 请求超时`
-      );
-      const response = await transport(
-        validated.url,
-        validated.address,
-        {
-          "User-Agent": "SpeakPlainlyResearch/0.1 (+local development)",
-          Accept: "*/*",
-          "Accept-Encoding": "identity",
-          ...options.headers,
-        },
-        controller.signal
-      );
+      const hop = await fetchOutboundHop(current, options, lookupHost, transport, controller.signal);
+      if (hop.kind === "response") return hop.result;
 
-      const headers = normalizeHeaders(response.headers);
-      let location: string | undefined;
-      try {
-        location = redirectLocation(response.status, headers);
-      } catch (error) {
-        response.close();
-        throw error;
+      if (redirectCount >= maxRedirects) {
+        throw new OutboundUrlPolicyError("出站请求重定向次数过多");
       }
-      if (location) {
-        response.close();
-        if (redirectCount >= maxRedirects) {
-          throw new OutboundUrlPolicyError("出站请求重定向次数过多");
-        }
-        const next = new URL(location, validated.url);
-        if (validated.url.protocol === "https:" && next.protocol === "http:") {
-          throw new OutboundUrlPolicyError("HTTPS redirects must not downgrade to HTTP");
-        }
-        current = next;
-        continue;
+      const next = new URL(hop.location, hop.from);
+      if (hop.from.protocol === "https:" && next.protocol === "http:") {
+        throw new OutboundUrlPolicyError("HTTPS redirects must not downgrade to HTTP");
       }
-
-      try {
-        const bytes = await readLimitedBody(response, options.maxBytes, controller.signal);
-        return {
-          ok: response.status >= 200 && response.status < 300,
-          status: response.status,
-          url: validated.url.toString(),
-          headers,
-          bytes,
-        };
-      } catch (error) {
-        response.close();
-        throw error;
-      }
+      current = next;
     }
   } catch (error) {
     if (controller.signal.aborted) {
@@ -355,6 +317,70 @@ export async function fetchBinaryWithOutboundPolicy(
     throw error;
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+type OutboundHop =
+  | { kind: "redirect"; location: string; from: URL }
+  | { kind: "response"; result: SafeFetchResult };
+
+/**
+ * Validate and fetch exactly one URL. A redirect is returned (with its
+ * response already closed) so the caller can apply the redirect policy;
+ * any other answer is read within the size limit.
+ */
+async function fetchOutboundHop(
+  current: URL,
+  options: SafeFetchOptions,
+  lookupHost: LookupHost,
+  transport: OpenTransport,
+  signal: AbortSignal
+): Promise<OutboundHop> {
+  const validated = await raceWithAbort(
+    validateOutboundUrl(current, lookupHost),
+    signal,
+    `${options.label} 请求超时`
+  );
+  const response = await transport(
+    validated.url,
+    validated.address,
+    {
+      "User-Agent": "SpeakPlainlyResearch/0.1 (+local development)",
+      Accept: "*/*",
+      "Accept-Encoding": "identity",
+      ...options.headers,
+    },
+    signal
+  );
+
+  const headers = normalizeHeaders(response.headers);
+  let location: string | undefined;
+  try {
+    location = redirectLocation(response.status, headers);
+  } catch (error) {
+    response.close();
+    throw error;
+  }
+  if (location) {
+    response.close();
+    return { kind: "redirect", location, from: validated.url };
+  }
+
+  try {
+    const bytes = await readLimitedBody(response, options.maxBytes, signal);
+    return {
+      kind: "response",
+      result: {
+        ok: response.status >= 200 && response.status < 300,
+        status: response.status,
+        url: validated.url.toString(),
+        headers,
+        bytes,
+      },
+    };
+  } catch (error) {
+    response.close();
+    throw error;
   }
 }
 
@@ -391,13 +417,15 @@ async function openNativeTransport(
   address: ResolvedAddress,
   headers: Readonly<Record<string, string>>,
   signal: AbortSignal,
-  requestOverride?: OpenNativeRequest
+  requestOverride?: OpenNativeRequest,
+  options?: Pick<SafeFetchOptions, "method" | "body">
 ): Promise<SafeTransportResponse> {
   return new Promise((resolve, reject) => {
     const request = requestOverride ?? (
       (url.protocol === "https:" ? httpsRequest : httpRequest) as OpenNativeRequest
     );
     const plan = buildPinnedRequestPlan(url, address, headers, signal);
+    if (options?.method) plan.options.method = options.method;
     const req = request(plan.url, plan.options, (response) => {
       resolve({
         status: response.statusCode ?? 0,
@@ -412,7 +440,7 @@ async function openNativeTransport(
     // IP, while the origin still receives the correct virtual-host header.
     req.setHeader("Host", plan.hostHeader);
     req.once("error", reject);
-    req.end();
+    req.end(options?.body);
   });
 }
 
