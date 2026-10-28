@@ -19,12 +19,12 @@
 
 ## 一眼看懂
 
-| 改写 Word | 生成文章 | 公众号排版 |
+| 改写 Word | 生成文章 | 写小说 |
 | --- | --- | --- |
-| <img src="assets/screenshots/01-rewrite.png" alt="编辑部校样台风格的 Word 改写流程" /> | <img src="assets/screenshots/02-generate.png" alt="带资料来源的文章生成流程" /> | <img src="assets/screenshots/03-gzh.png" alt="已恢复真实来源图片和署名的公众号排版预览" /> |
+| <img src="assets/screenshots/01-rewrite.jpg" alt="草坡小屋水彩场景下的 Word 改写页" /> | <img src="assets/screenshots/02-generate.jpg" alt="积云晴空水彩场景下的文章生成页" /> | <img src="assets/screenshots/03-novel.jpg" alt="林间小路水彩场景下的小说创作页" /> |
 
 <div align="center">
-  <sub>编辑部校样台：Word 改写、小说创作、带来源文章生成，以及包含真实来源图片的自包含公众号排版。</sub>
+  <sub>手绘水彩绘本风格的写作台：每种模式各有一幅原创场景，正文工作区保持安静的奶油色纸面。</sub>
 </div>
 
 ## 它能做什么
@@ -106,7 +106,9 @@ npm run dev
 
 ## 界面风格
 
-当前界面是一张“编辑部校样台”：深墨绿色边栏围住冷调纸张画布，珊瑚色标记会改变正文的动作，青色承载证据与焦点，完成稿落在白色文稿纸上。Word 改写与文章生成拥有彼此独立、持续保留的工作区，切换模式不会丢掉正在编辑的文稿或公众号排版结果。
+当前界面是日式手绘动画风格的水彩绘本：改写、生成、小说三种模式分别对应草坡小屋、积云晴空和林间小路三幅原创场景，云、草、光和风车等图层会缓慢轻动；开启“减少动态效果”时动作会变得更慢、更小。场景只出现在边栏和页头，正文工作区保持奶油色纸面卡片，颜色、字号和圆角统一来自 `frontend/src/styles/tokens.css`。改写、生成和小说拥有彼此独立、持续保留的工作区，切换模式不会丢掉正在编辑的文稿或公众号排版结果。
+
+场景图是离线绘制好的 WebP（`frontend/src/assets/scenery/`），由 `frontend/scripts/paint-scenery/` 里的生成脚本程序化绘制。
 
 所有长耗时动作都会有明确反馈。前端会为文章生成、选题/标题生成和整篇润色显示进度面板，包括百分比、当前阶段和最近日志，避免用户空等。
 
@@ -151,6 +153,8 @@ npm run dev
 
 国内来源包括少数派、IT之家、cnBeta、极客公园、科学网、科学网评论、钛媒体，以及 China Daily 的中国、商业和评论频道；国际来源包括 BBC World、NPR World、France 24、Al Jazeera、UN News、WHO News、Nature、TechCrunch、Ars Technica、Wired、MIT Technology Review、Engadget、Hacker News、CNBC 和 MarketWatch。
 
+使用 DeepSeek 模型时，后端会同时调用 [DeepSeek 联网搜索](https://api-docs.deepseek.com/api/search/)（`POST /v1/tools/search`）作为开放网页来源，直接复用已配置的 DeepSeek 密钥；它按次计费，每轮检索调用 1–2 次。请求不跟随重定向，密钥不会被带到其他站点；失败只记为“暂不可用”。在 `backend/.env` 设置 `DEEPSEEK_SEARCH=off` 可关闭，`DEEPSEEK_SEARCH_URL` 可改用其他 HTTPS 端点。
+
 Google News 和 Hacker News 检索不需要密钥。在 `backend/.env` 中配置 `EXA_API_KEY` 后，系统会直接搜索更多网页文章，并从 Reddit、Hacker News、知乎、Quora、Stack Overflow / Stack Exchange 等公开讨论页补充观点；未配置时仍兼容 Agent-Reach / mcporter。需要登录态的私密内容不会抓取。
 
 生成页会提示：境外站点较多，网络不稳定时开启境外代理通常能获得更完整的检索结果。如果希望后端请求也明确走本地代理，可在 `backend/.env` 设置 `HTTP_PROXY`、`HTTPS_PROXY` 和 `NO_PROXY`；Node.js 24.14+ 会在加载 `.env` 后动态启用代理，Windows 的 `run.bat` 也会读取启动前已存在的代理环境变量。
@@ -163,7 +167,9 @@ Google News 和 Hacker News 检索不需要密钥。在 `backend/.env` 中配置
 
 ## 证据驱动文章流水线
 
-完整文章生成现在会执行仓库内置的 [`evidence-article-pipeline`](.agents/skills/evidence-article-pipeline/SKILL.md)。资料检索至少两轮、最多十轮，每轮都会把有来源的客观事实与观点分开，删除仅由公开评论支撑的“事实”，再从实体、文件、日期、地点、反例和资料缺口生成下一轮关键词。高价值来源会进一步读取 Exa / Agent-Reach 高亮或经过出站安全策略抓取的有界原文，事实提取不再只依赖搜索摘要；原文正文只在后端使用，不返回前端。证据提前饱和就立即进入写作；第十轮仍有关键缺口时也会使用已有可核验事实继续成文，但会收窄结论并披露重要证据边界，不会填补或猜测缺失信息。只有十轮后一条可用于成文的客观事实都没有时，接口才返回 `422`。
+完整文章生成现在会执行仓库内置的 [`evidence-article-pipeline`](.agents/skills/evidence-article-pipeline/SKILL.md)。资料检索至少两轮、最多十轮，每轮都会把有来源的客观事实与观点分开，删除仅由公开评论支撑的“事实”，再从实体、文件、日期、地点、反例和资料缺口生成下一轮关键词。高价值来源会进一步读取 Exa / Agent-Reach 高亮或经过出站安全策略抓取的有界原文，事实提取不再只依赖搜索摘要；原文正文只在后端使用，不返回前端。证据提前饱和就立即进入写作；第十轮仍有关键缺口时也会使用已有可核验事实继续成文，但会收窄结论并披露重要证据边界，不会填补或猜测缺失信息。
+
+按标题生成时，第一轮会先用标题原文检索；如果一条资料都没有（带修辞的长标题常见这种情况），后端会让模型把标题一次性拆成 2–4 个可检索的关键词（实体、事件、地点、数据和底层主题），并结合选题关键词与领域名继续检索。模型不可用时改用确定性规则去掉“所有人”“到底”“为什么”等修辞成分。只有十轮后一条可用于成文的客观事实都没有时，接口才返回 `422`，并说明真实原因：一篇资料都没检索到、每轮事实评估都失败，还是资料都有但没有事实通过校验。
 
 资料饱和后，后端会从时间、空间、事件、因果、人物机构或“问题—证据—结论”中选择一条主轴建立线索图。每个节点都回指事实编号和来源编号；只有确实抓取到真实图片的来源才能承担图片证据。事实账本和线索图会先于普通来源清单进入写作提示。成稿还会检查事实支持、引用匹配、主题一致性，以及中文公众号的白名单语气；不通过时最多依据同一份证据重新成文三轮，仍失败就如实停止交付。
 
@@ -249,7 +255,9 @@ backend/
 frontend/
   src/components/  上传、文章生成、小说生成、公众号排版、编辑器、通用组件
   src/lib/         API、状态、国际化文案
-  src/styles.css   编辑部校样台主题与响应式布局
+  src/styles/      设计令牌、外壳、场景、卡片、编辑器与响应式样式
+  src/assets/scenery/      水彩场景图层（WebP）
+  scripts/paint-scenery/   场景图层的离线生成脚本
 
 assets/screenshots/  README 截图
 docs/                设计资料
