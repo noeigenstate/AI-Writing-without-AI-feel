@@ -51,6 +51,7 @@ You need:
 | npm | Installs project packages |
 | A model API key | DeepSeek/OpenAI-compatible by default |
 | Or a local model server | Ollama, LM Studio, vLLM, etc. |
+| Or Codex CLI with a ChatGPT plan | Install the current `@openai/codex` CLI and run `codex login` |
 | `.docx` files | Required for Word rewrite mode |
 
 Optional but useful: Git Bash on Windows if you want to run `./run.sh`.
@@ -215,6 +216,34 @@ LLM_MODEL=qwen2.5:14b
 LLM_THINKING_TYPE=off
 LLM_REASONING_EFFORT=off
 ```
+
+## Codex CLI Provider
+
+The default provider is `openai`; leaving `LLM_PROVIDER` unset preserves the existing DeepSeek / OpenAI-compatible requests. To use your ChatGPT Codex login, install a current official CLI (`npm install -g @openai/codex`), run `codex login` as the same OS user that runs the backend, and set these environment variables:
+
+```env
+LLM_PROVIDER=codex
+CODEX_MODEL=gpt-6.1-sol
+CODEX_REASONING_EFFORT=medium
+CODEX_CONCURRENCY=2
+CODEX_TIMEOUT_MS=600000
+CODEX_MIN_TIMEOUT_MS=180000
+# CODEX_BIN=/absolute/path/to/codex-or-codex.js
+```
+
+No `LLM_API_KEY` or `DEEPSEEK_API_KEY` is required for this provider. `LLM_PROVIDER` is trimmed and case-insensitive; unknown providers fail at startup. `CODEX_BIN` optionally overrides an executable or JavaScript entry file. Windows resolution honours PATH/PATHEXT, including native `.exe` installs. npm shims use their JS entry when present; other batch shims run through `cmd.exe` with fixed ASCII placeholders and the prompt on stdin. Embedded quotes or line breaks in batch arguments are rejected; use an executable or JS entry for those configurations.
+
+All Codex calls share `CODEX_CONCURRENCY` slots. The effective budget is `max(CODEX_MIN_TIMEOUT_MS, timeoutMs ?? CODEX_TIMEOUT_MS)`, measured from submission through queue wait and execution. Invalid/non-positive timeout settings use the defaults above. API-tuned 8–45 second budgets therefore get at least 180 seconds by default. An explicit `AbortSignal` cancels immediately, even below that floor: queued calls are removed and running process trees are terminated. Document rewrites retain 12-paragraph chunks and admit only one wave of concurrent Codex calls at a time, so a long document can finish across many call budgets.
+
+Research keeps deterministic translations and the 12-hour cache. Only topics that cannot be translated completely by those rules request a model translation; Codex uses its minimum budget instead of the API's 8 seconds. Timeout cancels the call and falls back to the full original topic. This preserves cross-language recall without paying for calls that are abandoned after 8 seconds. Evidence-model calls with a 45-second budget use the same Codex floor.
+
+`/api/health` reports `codex:gpt-6.1-sol` and performs a real model call on **every request**, consuming quota and typically taking 20–60 seconds plus queue wait. Avoid frequent health polling in Codex mode. For one probe from `backend/`: `LLM_PROVIDER=codex npm run test:llm -- --health-only` (Git Bash / POSIX shell).
+
+Tool switches were checked against the installed CLI 0.164.0 package and the official configuration schema: shell/unified execution, images, JS/code mode, search, agents, apps, hooks, plan updates and user-input tools are disabled where supported. `apply_patch_freeform=false` selects the patch variant; this CLI exposes no general `apply_patch` off switch. Calls therefore also retain the read-only sandbox, isolated temporary working directory, ignored user config/rules and the text-only instruction. A completely tool-free model surface is not guaranteed by the CLI.
+
+Each completion starts an ephemeral agent in a fresh temporary directory, with a read-only sandbox, shell and web search disabled, and user config/rules ignored. Authentication remains managed by the official CLI. Use a current CLI with `--ephemeral`, `--ignore-user-config`, and `--ignore-rules` support. Streaming delivers the final answer as one delta after completion, so SSE content matches the authoritative output file; it is not token-by-token. `disableThinking` selects low reasoning effort; temperature is silently ignored.
+
+This is slower than a direct model API: each call is an agent run with roughly 30k tokens of overhead (which can vary by CLI/model). Usage counts against your ChatGPT plan. This option is intended for personal local use, not production or multi-user service. It does not replace optional research-service credentials; set `DEEPSEEK_SEARCH=off` to avoid separate DeepSeek search calls when that service has no balance.
 
 ## Useful Commands
 

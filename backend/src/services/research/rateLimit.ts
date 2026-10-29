@@ -1,3 +1,5 @@
+export { createConcurrencyGate } from "../../lib/concurrency.js";
+
 const lastRunAt = new Map<string, number>();
 const providerQueues = new Map<string, Promise<void>>();
 
@@ -35,39 +37,4 @@ export function waitForProvider(provider: string, minSpacingMs: number): Promise
 
   providerQueues.set(provider, next);
   return next;
-}
-
-/**
- * Create a process-wide FIFO gate that runs at most `limit` tasks at once.
- * A queued caller takes its slot only when an earlier task releases one.
- */
-export function createConcurrencyGate(limit: number): <T>(task: () => Promise<T>) => Promise<T> {
-  let active = 0;
-  const waiters: (() => void)[] = [];
-
-  const acquire = (): Promise<void> => {
-    if (active < limit) {
-      active += 1;
-      return Promise.resolve();
-    }
-    return new Promise<void>((resolve) => {
-      waiters.push(() => {
-        active += 1;
-        resolve();
-      });
-    });
-  };
-  const release = (): void => {
-    active = Math.max(0, active - 1);
-    waiters.shift()?.();
-  };
-
-  return async <T>(task: () => Promise<T>): Promise<T> => {
-    await acquire();
-    try {
-      return await task();
-    } finally {
-      release();
-    }
-  };
 }

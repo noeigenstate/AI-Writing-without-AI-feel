@@ -1,5 +1,6 @@
 import { fetchArxivPapers } from "./arxiv.js";
 import { chat } from "../llm.js";
+import { config } from "../../core/config.js";
 import { containsHan } from "../../lib/text.js";
 import { cached } from "./cache.js";
 import { fetchNewsFeed } from "./rss.js";
@@ -417,7 +418,7 @@ export interface RegionalQueryPlan {
 
 export type RegionalQueryTranslator = (
   prompt: string,
-  options: { system: string; temperature: number }
+  options: { system: string; temperature: number; signal?: AbortSignal; timeoutMs?: number }
 ) => Promise<string>;
 
 export interface ResolveRegionalQueryPlanOptions {
@@ -490,13 +491,19 @@ export async function resolveRegionalQueryPlan(
   }
 
   const translate = options.translate ?? defaultRegionalQueryTranslator;
+  // Preserve cross-language recall for unmapped topics; successful plans are cached.
+  // API providers and injected translators retain the existing short budget.
+  const codexFloor = config.llm.codex.minTimeoutMs;
+  const defaultTimeout = config.llm.provider === "codex" && !options.translate
+    ? (Number.isFinite(codexFloor) && codexFloor > 0 ? codexFloor : 180_000)
+    : DEFAULT_TRANSLATION_TIMEOUT_MS;
   const loadTranslatedPlan = async (): Promise<RegionalQueryPlan> => {
     const translated = await translateRegionalQuery(
       sourceQuery,
       domainName,
       sourceHasHan ? "en" : "zh",
       translate,
-      options.timeoutMs ?? DEFAULT_TRANSLATION_TIMEOUT_MS
+      options.timeoutMs ?? defaultTimeout
     );
     if (!translated) throw new Error("Regional query translation returned no valid query");
     return sourceHasHan
@@ -517,7 +524,7 @@ export async function resolveRegionalQueryPlan(
 
 async function defaultRegionalQueryTranslator(
   prompt: string,
-  options: { system: string; temperature: number }
+  options: Parameters<RegionalQueryTranslator>[1]
 ): Promise<string> {
   return chat(prompt, { ...options, disableThinking: true });
 }
@@ -549,7 +556,7 @@ async function translateRegionalQuery(
     requiredAnchors: requiredAnchors.map((anchor) => anchor.source),
   });
   const raw = await withTimeout(
-    translate(prompt, { system, temperature: 0 }),
+    (signal) => translate(prompt, { system, temperature: 0, signal, timeoutMs }),
     Math.max(10, timeoutMs)
   );
   return parseTranslatedQuery(raw, sourceQuery, targetLanguage, requiredAnchors);
@@ -765,20 +772,21 @@ function uniqueIgnoringCase(values: readonly string[]): string[] {
   });
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Regional query translation timed out")), timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error: unknown) => {
-        clearTimeout(timer);
-        reject(error);
-      }
-    );
+async function withTimeout<T>(task: (signal: AbortSignal) => Promise<T>, timeoutMs: number): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error("Regional query translation timed out");
+      controller.abort(error);
+      reject(error);
+    }, timeoutMs);
   });
+  try {
+    return await Promise.race([task(controller.signal), timeout]);
+  } finally {
+    clearTimeout(timer!);
+  }
 }
 
 /** Produce high-confidence local and international searches without generic filler. */

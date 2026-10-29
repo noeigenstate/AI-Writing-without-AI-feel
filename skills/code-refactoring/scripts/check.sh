@@ -21,7 +21,7 @@ run() {
 cd "$ROOT/backend"
 run backend-tsc npx tsc -p tsconfig.json --noEmit
 for t in docx splitter protect article less-ai-tone novel research evidence-pipeline research-security \
-  licensed-media http-security app-security gzh-security score; do
+  licensed-media http-security app-security gzh-security score codex-provider; do
   run "backend-$t" timeout 600 npx tsx "src/scripts/test-$t.ts"
 done
 

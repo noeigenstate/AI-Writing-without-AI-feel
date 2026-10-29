@@ -51,6 +51,7 @@
 | npm | 安装项目依赖 |
 | 模型 API Key | 默认可接 DeepSeek / OpenAI 兼容接口 |
 | 或本地模型服务 | 例如 Ollama、LM Studio、vLLM |
+| 或已登录 ChatGPT 套餐的 Codex CLI | 安装最新版 `@openai/codex`，执行 `codex login` |
 | `.docx` 文件 | Word 改写模式需要 |
 
 Windows 用户如果想运行 `./run.sh`，建议装 Git Bash。也可以直接用 `run.bat`。
@@ -215,6 +216,34 @@ LLM_MODEL=qwen2.5:14b
 LLM_THINKING_TYPE=off
 LLM_REASONING_EFFORT=off
 ```
+
+## Codex CLI 模型提供方
+
+默认提供方为 `openai`；不设置 `LLM_PROVIDER` 时，原有 DeepSeek / OpenAI 兼容请求保持不变。如需使用 ChatGPT 的 Codex 登录，先安装最新版官方 CLI（`npm install -g @openai/codex`），用运行后端的同一系统用户执行 `codex login`，然后设置环境变量：
+
+```env
+LLM_PROVIDER=codex
+CODEX_MODEL=gpt-6.1-sol
+CODEX_REASONING_EFFORT=medium
+CODEX_CONCURRENCY=2
+CODEX_TIMEOUT_MS=600000
+CODEX_MIN_TIMEOUT_MS=180000
+# CODEX_BIN=/absolute/path/to/codex-or-codex.js
+```
+
+此提供方无需 `LLM_API_KEY` 或 `DEEPSEEK_API_KEY`。`LLM_PROVIDER` 会去掉首尾空白并转为小写，未知值会在启动时明确报错。`CODEX_BIN` 可指定可执行文件或 JavaScript 入口；Windows 按 PATH/PATHEXT 查找，支持独立安装的 `.exe`。npm shim 在 JS 入口存在时通过 Node 启动；其他批处理 shim 通过 `cmd.exe` 启动，命令行仅含固定 ASCII 占位符，提示词始终走 stdin。批处理参数中的双引号和换行会被拒绝，此类配置请直接指定可执行文件或 JS 入口。
+
+所有 Codex 调用共享 `CODEX_CONCURRENCY` 个并发名额。实际预算为 `max(CODEX_MIN_TIMEOUT_MS, timeoutMs ?? CODEX_TIMEOUT_MS)`，从提交时开始，包含排队和执行时间；无效或非正数配置使用上述默认值。原本面向 API 的 8–45 秒预算因此默认至少得到 180 秒。显式 `AbortSignal` 不受下限限制：取消会删除排队任务，或终止运行中的进程树。文档改写保留每块 12 段，只在并发名额空出时提交后续 Codex 调用，使长文可以跨多次调用预算完成。
+
+研究流程保留确定性翻译和 12 小时缓存，仅对规则无法完整翻译的主题调用模型；Codex 使用其最低预算，其他提供方仍为 8 秒。翻译超时会取消调用，并退回完整原始主题。这样保留跨语言召回，也避免任务在 8 秒后被遗弃却继续消耗额度。证据模型原有的 45 秒预算同样适用 Codex 下限。
+
+`/api/health` 显示 `codex:gpt-6.1-sol`，**每次请求都会真实调用模型并消耗额度**，通常需 20–60 秒加上排队时间。Codex 模式请避免频繁轮询。在 `backend/` 下可执行 `LLM_PROVIDER=codex npm run test:llm -- --health-only`（Git Bash / POSIX shell）进行一次探测。
+
+已对照本地 CLI 0.164.0 安装包和官方配置 schema 核对工具开关，关闭支持开关的 shell/unified execution、图片、JS/code mode、搜索、代理、应用、hook、计划更新和用户输入工具。`apply_patch_freeform=false` 只选择补丁工具的实现形式，此版本没有通用的 `apply_patch` 关闭开关，因此仍保留只读沙箱、隔离临时工作目录、忽略用户配置和规则，以及仅输出文本的指令；CLI 无法保证完全不向模型提供任何工具。
+
+每次调用会在新的临时空目录运行一次临时代理，使用只读沙箱，禁用 shell 和网页搜索，忽略用户配置与规则；认证仍由官方 CLI 管理。请使用支持 `--ephemeral`、`--ignore-user-config`、`--ignore-rules` 的新版 CLI。流式接口在调用完成后一次推送最终答案，确保 SSE 内容与最终输出文件一致，并非逐 token 输出。`disableThinking` 映射为低推理强度，temperature 参数会被静默忽略。
+
+这比直接调用模型 API 慢：每次都启动代理，约有 3 万 token 的额外上下文开销（随 CLI 和模型变化），用量计入 ChatGPT 套餐。此模式适合个人本地使用，不适合生产环境或多用户服务。它不会代替可选检索服务的凭证；DeepSeek 无余额时，可设置 `DEEPSEEK_SEARCH=off` 关闭单独计费的 DeepSeek 联网搜索。
 
 ## 常用命令
 
