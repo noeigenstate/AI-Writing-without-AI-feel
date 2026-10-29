@@ -1320,11 +1320,16 @@ const multilineTranslationPlan = await resolveRegionalQueryPlan("罗马混凝土
 });
 assert.deepEqual(multilineTranslationPlan, unknownChinesePlan, "multiline model output must be rejected");
 
+let timedOutTranslationSignal: AbortSignal | undefined;
 const timedOutTranslationPlan = await resolveRegionalQueryPlan("罗马混凝土史", "history", {
-  translate: async () => new Promise<string>(() => undefined),
+  translate: async (_prompt, options) => {
+    timedOutTranslationSignal = options.signal;
+    return new Promise<string>(() => undefined);
+  },
   timeoutMs: 10,
 });
 assert.deepEqual(timedOutTranslationPlan, unknownChinesePlan, "translation timeouts must use the deterministic fallback");
+assert.equal(timedOutTranslationSignal?.aborted, true, "translation timeout must cancel the underlying provider call");
 
 const injectionStrippedPlan = await resolveRegionalQueryPlan("罗马混凝土史", "history", {
   translate: async (prompt) => anchoredTranslationReply(

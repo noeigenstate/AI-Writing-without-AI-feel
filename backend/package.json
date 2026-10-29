@@ -23,6 +23,7 @@
     "test:app-security": "tsx src/scripts/test-app-security.ts",
     "test:gzh-security": "tsx src/scripts/test-gzh-security.ts",
     "test:llm": "tsx src/scripts/test-llm.ts",
+    "test:codex-provider": "tsx src/scripts/test-codex-provider.ts",
     "test:full": "tsx src/scripts/test-full.ts",
     "test:score": "tsx src/scripts/test-score.ts",
     "probe:tics": "tsx src/scripts/probe-tics.ts"

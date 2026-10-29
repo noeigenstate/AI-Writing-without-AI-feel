@@ -1,26 +1,13 @@
 import OpenAI from "openai";
 import { config } from "../core/config.js";
+import { codexChat } from "./codexProvider.js";
+import type { ChatOptions } from "../lib/chat.js";
+export type { ChatFn, ChatOptions } from "../lib/chat.js";
 
-const client = new OpenAI({
+const client = config.llm.provider === "codex" ? undefined : new OpenAI({
   baseURL: config.llm.baseURL,
   apiKey: config.llm.apiKey,
 });
-
-/** Options for a single chat completion. */
-export interface ChatOptions {
-  system?: string;
-  temperature?: number;
-  /** Per-request transport timeout; omit to use the SDK default. */
-  timeoutMs?: number;
-  /**
-   * Disable provider-side reasoning for strict structured-output calls.
-   *
-   * Some providers count hidden reasoning and visible content against the same
-   * token cap. A reasoning-heavy request can therefore finish with an empty
-   * `content` field even though the completion itself succeeded.
-   */
-  disableThinking?: boolean;
-}
 
 /**
  * Send one prompt and return the full completion text.
@@ -30,7 +17,8 @@ export interface ChatOptions {
  * @returns The model's reply, or "" if empty.
  */
 export async function chat(prompt: string, opts: ChatOptions = {}): Promise<string> {
-  const res = await client.chat.completions.create(
+  if (config.llm.provider === "codex") return codexChat(prompt, opts);
+  const res = await client!.chat.completions.create(
     {
       ...baseRequest(prompt, opts),
       stream: false,
@@ -40,9 +28,6 @@ export async function chat(prompt: string, opts: ChatOptions = {}): Promise<stri
   );
   return res.choices[0]?.message?.content ?? "";
 }
-
-/** Signature of {@link chat}; services take it as a parameter so tests can inject a stub. */
-export type ChatFn = typeof chat;
 
 /**
  * Stream a completion, invoking `onDelta` for each chunk.
@@ -57,7 +42,8 @@ export async function chatStream(
   onDelta: (chunk: string) => void,
   opts: ChatOptions = {}
 ): Promise<string> {
-  const stream = await client.chat.completions.create(
+  if (config.llm.provider === "codex") return codexChat(prompt, opts, onDelta);
+  const stream = await client!.chat.completions.create(
     {
       ...baseRequest(prompt, opts),
       stream: true,
@@ -83,11 +69,12 @@ export async function chatStream(
  * @returns `{ ok, model, error? }` — `ok` is false if the call throws.
  */
 export async function health(): Promise<{ ok: boolean; model: string; error?: string }> {
+  const model = config.llm.provider === "codex" ? `codex:${config.llm.codex.model}` : config.llm.model;
   try {
     const reply = await chat("回复「ok」两个字即可。", { temperature: 0 });
-    return { ok: true, model: config.llm.model, error: reply ? undefined : "空回复" };
+    return { ok: true, model, error: reply ? undefined : "空回复" };
   } catch (e) {
-    return { ok: false, model: config.llm.model, error: (e as Error).message };
+    return { ok: false, model, error: (e as Error).message };
   }
 }
 
@@ -99,8 +86,11 @@ function baseRequest(prompt: string, opts: ChatOptions) {
   return { model: config.llm.model, temperature: opts.temperature ?? config.llm.temperature, messages };
 }
 
-function requestOptions(opts: ChatOptions): { timeout: number } | undefined {
-  return opts.timeoutMs ? { timeout: opts.timeoutMs } : undefined;
+function requestOptions(opts: ChatOptions): { timeout?: number; signal?: AbortSignal } {
+  return {
+    ...(opts.timeoutMs ? { timeout: opts.timeoutMs } : {}),
+    ...(opts.signal ? { signal: opts.signal } : {}),
+  };
 }
 
 /** Values that omit an optional extra; local servers usually reject these params. */

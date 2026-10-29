@@ -1,4 +1,5 @@
 import { XMLParser } from "fast-xml-parser";
+export { isRecord, tryParseJson } from "../../lib/json.js";
 
 /** Parsing helpers shared by the research source adapters. */
 
@@ -12,11 +13,6 @@ export const xmlParser = new XMLParser({
 
 export type XmlValue = string | number | boolean | Record<string, unknown> | XmlValue[] | null | undefined;
 
-/** Type guard for plain objects (not arrays/null). */
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 /** The value itself when it is a string, otherwise "". */
 export function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -28,15 +24,6 @@ export function asArray<T>(value: T | T[] | undefined): T[] {
     return [];
   }
   return Array.isArray(value) ? value : [value];
-}
-
-/** JSON.parse that yields undefined instead of throwing. */
-export function tryParseJson(value: string): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return undefined;
-  }
 }
 
 /** Normalize a date string to ISO-8601, or "" if missing/unparseable. */

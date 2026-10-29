@@ -1,4 +1,6 @@
 import { chat, type ChatFn } from "./llm.js";
+import { config } from "../core/config.js";
+import { createConcurrencyGate } from "../lib/concurrency.js";
 import {
   styleProfilePrompt,
   rewriteDocPrompt,
@@ -108,9 +110,14 @@ export async function rewriteDocument(
   const chunks: typeof todo[] = [];
   for (let i = 0; i < todo.length; i += chunkSize) chunks.push(todo.slice(i, i + chunkSize));
 
-  // 各块并行调用，缩短整篇等待时间
+  // Admit Codex chunks as slots open, so a long document does not spend later
+  // chunks' entire per-call budgets waiting behind its own earlier chunks.
+  const concurrency = config.llm.codex.concurrency;
+  const runChunk = config.llm.provider === "codex" && ask === chat
+    ? createConcurrencyGate(Number.isInteger(concurrency) && concurrency > 0 ? concurrency : 2)
+    : <T>(task: () => Promise<T>) => task();
   await Promise.all(
-    chunks.map(async (chunk) => {
+    chunks.map((chunk) => runChunk(async () => {
       try {
         const allowed = new Set(chunk.map((p) => p.index));
         const raw = await ask(rewriteDocPrompt(styleSummary, chunk, lang), { temperature: 0.7 });
@@ -125,7 +132,7 @@ export async function rewriteDocument(
         // 解析失败：保留原文，避免整篇崩
         for (const p of chunk) result.set(p.index, p.text);
       }
-    })
+    }))
   );
   return result;
 }

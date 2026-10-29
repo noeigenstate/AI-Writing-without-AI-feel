@@ -5,6 +5,20 @@
  * recover the JSON payload and, on failure, ask the model to fix its own syntax.
  */
 
+/** Type guard for plain objects (not arrays/null). */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** JSON.parse that yields undefined instead of throwing. */
+export function tryParseJson(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Minimal chat signature so this module need not depend on the LLM service. */
 export type AskFn = (
   prompt: string,
