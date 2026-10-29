@@ -17,3 +17,7 @@ personal_paper/
 
 # 本地测试样例文档（含个人内容，不纳入版本库）
 /test/
+
+# Downloaded public-domain evaluation corpus (local data only)
+/data/corpus/
+/data/eval/

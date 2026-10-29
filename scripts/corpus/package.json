@@ -1,0 +1,9 @@
+{
+  "name": "speak-plainly-corpus",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "opencc-js": "1.0.5",
+    "parse5": "^8.0.0"
+  }
+}
